@@ -1,0 +1,12 @@
+# This public repository deliberately tracks only the reusable source surface.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/CITATION.cff
+!/requirements.txt
+!/run_pipeline.ps1
+!/config.example.json
+!/code/
+/code/*
+!/code/*.py
