@@ -8,7 +8,24 @@ from scipy import ndimage as ndi
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
 
-from tracking import frame_observations, motion_support
+from tracking import motion_support
+
+
+def _geometry_observation(mask: np.ndarray) -> dict:
+    """Return only the geometry consumed by persistent-merge reasoning."""
+    yy, xx = np.nonzero(mask)
+    return {
+        "mask": mask,
+        "position": np.array([yy.mean(), xx.mean()], float),
+        "area": int(len(yy)),
+    }
+
+
+def _frame_geometry(labels: np.ndarray) -> dict[int, dict]:
+    return {
+        int(identity): _geometry_observation(labels == identity)
+        for identity in np.unique(labels) if int(identity) > 0
+    }
 
 
 def _identity_shape(mask: np.ndarray) -> np.ndarray:
@@ -48,10 +65,12 @@ def _nearest_host_pixel(host: np.ndarray, point: np.ndarray) -> tuple[int, int]:
 def _candidate_seeds(host: np.ndarray, raw: np.ndarray,
                      predicted_a: np.ndarray, predicted_b: np.ndarray,
                      params: dict,
-                     destination_a: np.ndarray | None = None
+                     destination_a: np.ndarray | None = None,
+                     smooth: np.ndarray | None = None,
                      ) -> list[tuple[int, int]]:
-    smooth = ndi.gaussian_filter(raw.astype(np.float32),
-                                 sigma=float(params["peak_sigma_px"]))
+    if smooth is None:
+        smooth = ndi.gaussian_filter(
+            raw.astype(np.float32), sigma=float(params["peak_sigma_px"]))
     host_values = smooth[host]
     threshold = float(np.percentile(host_values, 40)) if host_values.size else 0.0
     peaks = peak_local_max(
@@ -77,7 +96,8 @@ def _partition_score(host: np.ndarray, raw: np.ndarray,
                      expected_shape_a: np.ndarray, expected_shape_b: np.ndarray,
                      lag: np.ndarray, seed_a: tuple[int, int],
                      seed_b: tuple[int, int], params: dict,
-                     destination_a: np.ndarray | None = None
+                     destination_a: np.ndarray | None = None,
+                     smooth: np.ndarray | None = None,
                      ) -> dict | None:
     if seed_a == seed_b:
         return None
@@ -87,8 +107,9 @@ def _partition_score(host: np.ndarray, raw: np.ndarray,
     markers = np.zeros(host.shape, np.uint8)
     markers[seed_a] = 1
     markers[seed_b] = 2
-    smooth = ndi.gaussian_filter(raw.astype(np.float32),
-                                 sigma=float(params["peak_sigma_px"]))
+    if smooth is None:
+        smooth = ndi.gaussian_filter(
+            raw.astype(np.float32), sigma=float(params["peak_sigma_px"]))
     # Microglial processes and the detector both use eight-neighbour connectivity.
     # Four-neighbour watershed can silently leave diagonally attached host pixels at 0.
     split = watershed(-smooth, markers=markers, mask=host,
@@ -183,11 +204,11 @@ def _partition_score(host: np.ndarray, raw: np.ndarray,
 def _split_interval(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
                     start_t: int, future_t: int, identity_a: int,
                     identity_b: int, params: dict,
-                    destination_masks: dict[int, np.ndarray] | None = None,
+    destination_masks: dict[int, np.ndarray] | None = None,
                     ) -> tuple[np.ndarray, list[dict]] | None:
     candidate = labels.copy()
-    before = frame_observations(candidate[start_t - 1], raw[start_t - 1])
-    future = frame_observations(candidate[future_t], raw[future_t])
+    before = _frame_geometry(candidate[start_t - 1])
+    future = _frame_geometry(candidate[future_t])
     if identity_a not in before or identity_b not in before \
             or identity_a not in future or identity_b not in future:
         return None
@@ -220,15 +241,18 @@ def _split_interval(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
                             + alpha * future_shape_b)
         destination_a = (None if destination_masks is None
                          else destination_masks.get(t))
+        smooth = ndi.gaussian_filter(
+            raw[t].astype(np.float32), sigma=float(params["peak_sigma_px"]))
         seeds = _candidate_seeds(
-            host, raw[t], predicted_a, predicted_b, params, destination_a)
+            host, raw[t], predicted_a, predicted_b, params, destination_a,
+            smooth)
         candidates: list[dict] = []
         for first, second in itertools.permutations(seeds, 2):
             scored = _partition_score(
                 host, raw[t], previous_a, previous_b, predicted_a, predicted_b,
                 expected_area_a, expected_area_b, expected_shape_a,
                 expected_shape_b, lag[t - 1], first, second, params,
-                destination_a)
+                destination_a, smooth)
             if scored is not None:
                 candidates.append(scored)
         if not candidates:
@@ -248,8 +272,8 @@ def _split_interval(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
         candidate[t][best["part_b"]] = identity_b
         if not np.array_equal(candidate[t] > 0, labels[t] > 0):
             raise AssertionError("merge partition changed foreground support")
-        current = frame_observations(candidate[t], raw[t])
-        previous_a, previous_b = current[identity_a], current[identity_b]
+        previous_a = _geometry_observation(best["part_a"])
+        previous_b = _geometry_observation(best["part_b"])
         rows.append({
             "t": t, "imagej_frame": t + 1,
             "candidate_count": len(candidates),
@@ -288,8 +312,8 @@ def carry_identities_through_merges(
     events: list[dict] = []
     event_number = 0
     for t in range(1, len(fixed)):
-        previous = frame_observations(fixed[t - 1], raw[t - 1])
-        current = frame_observations(fixed[t], raw[t])
+        previous = _frame_geometry(fixed[t - 1])
+        current = _frame_geometry(fixed[t])
         vanished = sorted(set(previous) - set(current))
         continuing = sorted(set(previous) & set(current))
         for identity_a in vanished:

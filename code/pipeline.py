@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import platform
+import shutil
 import sys
 from pathlib import Path
 
@@ -13,12 +15,16 @@ import skimage
 import tifffile
 from PIL import Image, ImageDraw
 
+from accepted_history import (
+    AcceptedHistoryInputs, load_history_inputs_from_run,
+    _save_final_labels, _well_issue001_isolated_pair_encounter_recovery,
+    run_accepted_history)
 from common import (Config, ROOT, Run, OUTLINE_COLOURS, display_raw, label_edges,
                     load_stack, outline_overlay, read_json, save_rgb_stack,
                     save_stack, sha256, validate_labels, write_json)
 from events import resolve_events
 from global_soma_ledger import (
-    GlobalSomaLedgerParams, add_three_cell_bookend_observations,
+    GlobalSomaLedgerParams, add_field_discovered_bookend_observations,
     reuse_retired_identity_names, separate_substantial_soma_objects,
     substantial_identity_conflicts, track_physical_somas)
 from identity_aliases import (carry_recurrent_alias_pairs_to_end,
@@ -27,8 +33,10 @@ from identity_aliases import (carry_recurrent_alias_pairs_to_end,
 from lineage_confidence import (identity_confidence_table,
                                 restore_deferred_identity_layer)
 from midpoint_reconciliation import reconcile_midpoint_bookends
-from model_review import TransferParams, score_review_gold_standard
+from model_review import (TransferParams, TwoCoreParams,
+                          audit_two_core_objects, group_two_core_runs)
 from motion_handoffs import (build_motion_pair_cache,
+                             build_motion_reservation_requests,
                              carry_established_identities_along_motion,
                              carry_identities_through_motion_handoffs,
                              carry_reserved_identities_through_motion_hosts,
@@ -39,12 +47,16 @@ from oscillatory_reconciliation import (optimise_host_merge_graph,
                                          optimise_lineage_graph)
 from persistence import green_evidence_for_fixed_objects, retrack_fixed_objects
 from persistent_merges import carry_identities_through_merges
+from stationary_reconciliation import (
+    PIXEL_COLUMNS, _assert_identity_blind_params, align_stack,
+    discover_stationary_takeovers, reconciliation_params)
 from partial_body_transfers import (
     GlobalPairLedgerParams, IdentityLedgerParams, PredecessorCoreParams,
     carry_persistent_two_core_slots, carry_recurrent_host_pair_ledger,
     correct_delayed_bookend_runs, correct_identity_ledger_transfers,
     correct_predecessor_core_merges, correct_structurally_proven_unresolved_runs)
-from tracking import frame_observations, track_from_anchor
+from tracking import (frame_observations, prepare_tracking_observations,
+                      track_from_anchor)
 
 
 def _pinned_paths(cfg: Config, stem: str) -> dict[str, Path]:
@@ -122,6 +134,8 @@ def stage_m1(cfg: Config, stem: str, run_name: str,
     }
     run = Run("m1_motion", run_name, params, upstream=f"m0_inputs/{run_name}")
     try:
+        with tifffile.TiffFile(sources["lag_float"]) as lag_tiff:
+            lag_transitions = int(lag_tiff.series[0].shape[0])
         manifest = run.dir / "out" / f"{stem}_motion_sources.json"
         write_json(manifest, {
             "stem": stem,
@@ -133,7 +147,7 @@ def stage_m1(cfg: Config, stem: str, run_name: str,
                       for name, path in sources.items()},
         })
         run.record("motion_sources", manifest)
-        run.finish({"lag_transitions": 100, "cache_rebuilt": False,
+        run.finish({"lag_transitions": lag_transitions, "cache_rebuilt": False,
                     "motion_arrays_mutated": False})
     except BaseException as error:
         run.fail(error); raise
@@ -540,6 +554,7 @@ def stage_m12_accepted(
         baseline: np.ndarray, observations: np.ndarray,
         observation_table: pd.DataFrame, anchor_t: int,
         upstream_run: str | None = None,
+        history_inputs: AcceptedHistoryInputs | None = None,
         ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Accepted long-memory and reserved fast-motion identity resolver."""
     accepted = cfg.values["accepted_postprocessing"]["identity_reservation"]
@@ -549,7 +564,7 @@ def stage_m12_accepted(
     run = Run("m12_identity_reservation", run_name, {
         "stem": stem,
         "accepted_version": accepted["version"],
-        "approved_candidate": accepted["approved_run"],
+        "parameter_source": "accepted_postprocessing.identity_reservation",
         "approved_scope": accepted["approved_scope"],
         "tracking": tracking_params,
         "motion_handoff": motion_params,
@@ -578,32 +593,17 @@ def stage_m12_accepted(
 
         seeded, seed_events = seed_first_handoff_identities(
             long_memory, guide, handoffs)
-        persistent_ids = set(seed_events.persistent_identity.astype(int))
-        if len(persistent_ids) != 1:
-            raise AssertionError(
-                "accepted identity reservation did not resolve one supplied identity")
-        supplied_identity = persistent_ids.pop()
         trajectory, trajectory_events, trajectory_audit = \
             carry_established_identities_along_motion(
                 seeded, raw, lag, motion_params, pair_cache=pair_cache)
 
-        canonical_reservations: list[dict] = []
-        for seed in seed_events.itertuples():
-            target = int(seed.persistent_identity)
-            alias = int(seed.displaced_identity)
-            start_t = int(seed.t) + 1
-            while start_t < len(seeded) and np.any(seeded[start_t] == alias):
-                start_t += 1
-            if start_t >= len(seeded):
-                raise AssertionError("accepted corrected motion alias never ended")
-            for frame in range(start_t, len(trajectory)):
+        reservations, reservation_audit = build_motion_reservation_requests(
+            seeded, seed_events)
+        for reservation in reservations.itertuples(index=False):
+            target = int(reservation.identity)
+            alias = int(reservation.displaced_identity)
+            for frame in range(int(reservation.to_t), len(trajectory)):
                 trajectory[frame][trajectory[frame] == target] = alias
-            canonical_reservations.append({
-                "kind": "motion_alias_ended_target_reserved",
-                "identity": target,
-                "to_t": start_t,
-            })
-        reservations = pd.DataFrame(canonical_reservations)
         candidate, host_carry, host_inferred = \
             carry_reserved_identities_through_motion_hosts(
                 trajectory, raw, lag, reservations, motion_params,
@@ -615,18 +615,14 @@ def stage_m12_accepted(
         if mappings.duplicated(["t", "persistent_identity"]).any():
             raise AssertionError(
                 "accepted identity reservation assigned one identity twice")
-        missing = [t + 1 for t in range(54, len(candidate))
-                   if not np.any(candidate[t] == supplied_identity)]
-        if missing:
-            raise AssertionError(
-                f"accepted supplied identity missing on ImageJ frames {missing}")
-
         inferred = (geometric_inferred | host_inferred
                     | (long_memory != retracked)
                     | (candidate != long_memory))
         frame_table, tracks = _identity_tables(candidate, raw, inferred)
         outputs = {
             "labels": run.dir / "out" / f"{stem}.tif",
+            "pre_reservation_labels": run.dir / "mid" /
+                f"{stem}_pre_reservation_long_memory.tif",
             "long_memory_links": run.dir / "out" / "long_memory_links.csv",
             "mapping": run.dir / "out" / "frame_object_identity_map.csv",
             "motion_evidence": run.dir / "mid" / "fixed_object_motion_evidence.csv",
@@ -637,6 +633,7 @@ def stage_m12_accepted(
             "long_trajectory_events": run.dir / "out" / "long_memory_trajectory_events.csv",
             "long_trajectory_audit": run.dir / "out" / "long_memory_trajectory_audit.csv",
             "seed_events": run.dir / "out" / "first_handoff_identity_seeds.csv",
+            "reservation_audit": run.dir / "out" / "motion_reservation_audit.csv",
             "trajectory_events": run.dir / "out" / "motion_trajectory_events.csv",
             "trajectory_audit": run.dir / "out" / "motion_trajectory_audit.csv",
             "host_carry": run.dir / "out" / "reserved_identity_host_carry.csv",
@@ -646,6 +643,8 @@ def stage_m12_accepted(
             "outlines": run.dir / "qc" / f"{stem}_outline.tif",
         }
         save_stack(outputs["labels"], candidate, cfg.values["frame_interval_min"])
+        save_stack(outputs["pre_reservation_labels"], long_memory,
+                   cfg.values["frame_interval_min"])
         links.to_csv(outputs["long_memory_links"], index=False)
         mappings.to_csv(outputs["mapping"], index=False)
         motion_evidence.to_csv(outputs["motion_evidence"], index=False)
@@ -656,6 +655,7 @@ def stage_m12_accepted(
         long_trajectory_events.to_csv(outputs["long_trajectory_events"], index=False)
         long_trajectory_audit.to_csv(outputs["long_trajectory_audit"], index=False)
         seed_events.to_csv(outputs["seed_events"], index=False)
+        reservation_audit.to_csv(outputs["reservation_audit"], index=False)
         trajectory_events.to_csv(outputs["trajectory_events"], index=False)
         trajectory_audit.to_csv(outputs["trajectory_audit"], index=False)
         host_carry.to_csv(outputs["host_carry"], index=False)
@@ -669,8 +669,7 @@ def stage_m12_accepted(
             run.record(label, path)
 
         summary = {
-            "supplied_persistent_identity": int(supplied_identity),
-            "supplied_identity_continuous_imagej_frames_55_101": True,
+            "targeting_mode": "field_wide_motion_reservation",
             "maximum_detection_gap_frames": int(tracking_params["max_gap_frames"]),
             "global_identities_before": int(
                 len(set(map(int, np.unique(baseline))) - {0})),
@@ -678,17 +677,34 @@ def stage_m12_accepted(
             "global_identity_reduction": int(
                 len(set(map(int, np.unique(baseline))) - {0}) - len(tracks)),
             "first_handoff_identity_seeds": int(len(seed_events)),
+            "seeded_persistent_identities": int(
+                seed_events.persistent_identity.nunique()) if len(seed_events) else 0,
+            "reservation_requests_accepted": int(len(reservations)),
+            "reservation_requests_rejected": int(
+                (reservation_audit.decision == "rejected").sum())
+                if len(reservation_audit) else 0,
             "motion_trajectory_events": int(len(trajectory_events)),
             "forced_host_frames": int(len(host_carry)),
-            "forced_host_first_imagej_frame": int(host_carry.imagej_frame.min()),
-            "forced_host_last_imagej_frame": int(host_carry.imagej_frame.max()),
+            "forced_host_first_imagej_frame": (
+                int(host_carry.imagej_frame.min()) if len(host_carry) else None),
+            "forced_host_last_imagej_frame": (
+                int(host_carry.imagej_frame.max()) if len(host_carry) else None),
             "foreground_pixels_added": 0,
             "foreground_pixels_removed": 0,
             "foreground_support_unchanged": True,
             "co_present_identity_errors": 0,
-            "human_review": "approved",
-            "accepted_into_base": True,
         }
+        if history_inputs is not None:
+            history_inputs.reservation_labels = candidate
+            history_inputs.pre_reservation_labels = long_memory
+            required_host_columns = {"identity", "host_identity"}
+            history_inputs.host_audit = (
+                host_carry
+                if required_host_columns.issubset(host_carry.columns)
+                else pd.DataFrame(columns=["identity", "host_identity"]))
+            history_inputs.motion_reserved = (
+                _accepted_motion_reservation_identities(reservation_audit))
+            history_inputs.motion_reservation_events = reservation_audit
         run.finish(summary)
         return candidate, inferred, tracks
     except BaseException as error:
@@ -696,37 +712,60 @@ def stage_m12_accepted(
         raise
 
 
+def _accepted_motion_reservation_identities(events: pd.DataFrame) -> set[int]:
+    """Return identities backed by accepted field-discovered reservation events."""
+    if events.empty:
+        return set()
+    required = {"identity", "decision"}
+    missing = required - set(events.columns)
+    if missing:
+        raise ValueError(f"motion reservation audit missing columns: {sorted(missing)}")
+    accepted = events[events.decision.astype(str).eq("accepted")]
+    return set(accepted.identity.astype(int))
+
+
 def stage_m19_accepted(
         cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
         baseline: np.ndarray, observations: np.ndarray,
         observation_table: pd.DataFrame, anchor_t: int,
         upstream_run: str | None = None,
+        motion_reservation_events: pd.DataFrame | None = None,
+        history_inputs: AcceptedHistoryInputs | None = None,
         ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Accepted destination-led confidence-layer and lineage reunion stage."""
     accepted = cfg.values["accepted_postprocessing"]["layered_lineage"]
     upstream_name = upstream_run or run_name
+    if (motion_reservation_events is None and history_inputs is not None
+            and history_inputs.motion_reservation_events is not None):
+        motion_reservation_events = history_inputs.motion_reservation_events
+    if motion_reservation_events is None:
+        reservation_path = (ROOT / "m12_identity_reservation" / upstream_name /
+                            "out/motion_reservation_audit.csv")
+        motion_reservation_events = (pd.read_csv(reservation_path)
+                                     if reservation_path.is_file()
+                                     else pd.DataFrame())
+    motion_reserved = _accepted_motion_reservation_identities(
+        motion_reservation_events)
     run = Run("m19_layered_lineage", run_name, {
         "stem": stem,
         "accepted_version": accepted["version"],
-        "approved_candidate": accepted["approved_candidate"],
         "mode": ("rebuild physical somas, track red destinations to protected "
                  "blue sources, then reunite non-overlapping lineages"),
         "confidence": accepted["confidence"],
         "tracking": accepted["tracking"],
         "reconciliation": accepted["reconciliation"],
+        "upstream_motion_reservation_events": int(len(motion_reservation_events)),
+        "motion_reserved_lineages": int(len(motion_reserved)),
     }, upstream=f"m12_identity_reservation/{upstream_name}")
     try:
         raw = load_stack(sources["registered_raw"])
         lag = load_stack(sources["lag_float"])
-        gold = pd.read_csv(ROOT / accepted["review_benchmark"])
-        objects = pd.read_csv(ROOT / accepted["review_objects"])
-        review_runs = pd.read_csv(ROOT / accepted["review_runs"])
-        reviewer = pd.read_csv(ROOT / accepted["approved_review_labels"])
-        if len(reviewer) != 8 or set(
-                reviewer.verdict.astype(str).str.lower()) != {"approved"}:
-            raise AssertionError(
-                "accepted layered-lineage stage lacks eight approved verdicts")
-
+        structural = accepted["structural_evidence"]
+        objects = audit_two_core_objects(
+            baseline, raw, TwoCoreParams(**structural["two_core"]))
+        structural_runs = group_two_core_runs(
+            objects, int(structural["maximum_run_gap_frames"]),
+            float(structural["maximum_run_shift_px_per_frame"]))
         # Rebuild the approved foreground partition source from the accepted
         # upstream labels. Identity names from this step are never trusted.
         ledger_params = IdentityLedgerParams(transfer=TransferParams(
@@ -755,48 +794,45 @@ def stage_m19_accepted(
         shape_source, structural_events, structural_frames, structural_inferred = \
             correct_structurally_proven_unresolved_runs(
                 shape_source, raw, detection_labels=baseline, objects=objects,
-                runs=review_runs, skip_run_ids=used)
+                runs=structural_runs, skip_run_ids=used)
         proved_frames = pd.concat(
             [direct_frames, bookend_frames, persistent_frames, structural_frames],
             ignore_index=True, sort=False)
         shape_source, recurrent_events, recurrent_frames, recurrent_inferred = \
             carry_recurrent_host_pair_ledger(
                 shape_source, raw, proved_frames, recurrent_params,
-                detection_labels=baseline, objects=objects, runs=review_runs)
+                detection_labels=baseline, objects=objects, runs=structural_runs)
         shape_source, predecessor_events, predecessor_frames, predecessor_inferred = \
             correct_predecessor_core_merges(
                 shape_source, raw, predecessor_params,
-                detection_labels=baseline, objects=objects, runs=review_runs)
-        expected_shape = load_stack(ROOT / accepted["expected_shape_source"])
-        if not np.array_equal(shape_source, expected_shape):
-            raise AssertionError(
-                "accepted foreground partition source was not reproduced exactly")
-
+                detection_labels=baseline, objects=objects, runs=structural_runs)
         # Rebuild Attempt 005's physical-soma comparison from the accepted base.
         soma_params = GlobalSomaLedgerParams(**accepted["soma_ledger"])
         physical, soma_audit = separate_substantial_soma_objects(
             shape_source, soma_params.minimum_substantial_core_px)
+        comparison_tracking = dict(accepted["comparison_tracking"])
+        comparison_tracking["motion_reservation_identities"] = sorted(
+            motion_reserved)
         preliminary, preliminary_links, preliminary_evidence, preliminary_aliases = \
             track_physical_somas(
                 physical, baseline, raw, lag, anchor_t,
-                accepted["comparison_tracking"], observations,
+                comparison_tracking, observations,
                 observation_table, soma_params)
-        physical, three_cell_partitions = add_three_cell_bookend_observations(
-            physical, preliminary, raw, lag, gold,
-            cfg.values["accepted_postprocessing"]["persistent_merges"])
+        physical, bookend_observation_audit = \
+            add_field_discovered_bookend_observations(
+                physical, preliminary, raw, lag, objects, structural_runs,
+                cfg.values["accepted_postprocessing"]["persistent_merges"],
+                float(structural["minimum_bookend_observation_score"]))
+        prepared_tracking = prepare_tracking_observations(
+            physical, raw)
         comparison, comparison_links, comparison_evidence, comparison_aliases = \
             track_physical_somas(
                 physical, baseline, raw, lag, anchor_t,
-                accepted["comparison_tracking"], observations,
-                observation_table, soma_params)
+                comparison_tracking, observations,
+                observation_table, soma_params, prepared_tracking)
         comparison, comparison_reused = reuse_retired_identity_names(
             comparison, baseline,
             int(accepted["minimum_retired_name_overlap_px"]))
-        expected_comparison = load_stack(ROOT / accepted["expected_comparison"])
-        if not np.array_equal(comparison, expected_comparison):
-            raise AssertionError(
-                "accepted Attempt 005 comparison was not reproduced exactly")
-
         # Large established identities are tracked first. A red destination may
         # search for a blue source, but cannot steal a whole-movie-supported name.
         comparison_confidence = identity_confidence_table(
@@ -808,18 +844,13 @@ def stage_m19_accepted(
         stable, stable_links, stable_evidence, stable_aliases = \
             track_physical_somas(
                 physical, comparison, raw, lag, anchor_t, tracking_params,
-                observations, observation_table, soma_params)
+                observations, observation_table, soma_params,
+                prepared_tracking)
         stable, deferred = restore_deferred_identity_layer(
             stable, physical, comparison, high_ids)
         stable, stable_reused = reuse_retired_identity_names(
             stable, comparison,
             int(accepted["minimum_retired_name_overlap_px"]))
-        expected_stable = load_stack(
-            ROOT / accepted["expected_stable_intermediate"])
-        if not np.array_equal(stable, expected_stable):
-            raise AssertionError(
-                "accepted destination-led intermediate was not reproduced exactly")
-
         # Join only non-overlapping before/after fragments. Established names win
         # over weak fragments on either side of the midpoint.
         stable_confidence = identity_confidence_table(
@@ -832,38 +863,12 @@ def stage_m19_accepted(
         candidate, reunions, reunion_candidates = reconcile_midpoint_bookends(
             stable, raw, anchor_t, reconciliation)
 
-        reviewed_path = ROOT / accepted["approved_candidate"]
-        if sha256(reviewed_path) != accepted["approved_candidate_sha256"]:
-            raise AssertionError("approved Attempt 019 fingerprint changed")
-        reviewed = load_stack(reviewed_path)
-        if not np.array_equal(candidate, reviewed):
-            raise AssertionError(
-                "accepted layered-lineage rebuild differs from reviewed Attempt 019")
-
-        score = score_review_gold_standard(candidate, gold)
-        under = score[score.truth == "undersegmentation"]
-        two_ranks = set(gold.loc[gold.true_cell_count == 2, "review_rank"])
-        two = under[under.review_rank.isin(two_ranks)]
-        singles = score[score.truth == "single_cell"]
-        uncertain = score[score.truth == "uncertain"]
         conflicts = substantial_identity_conflicts(
             candidate, soma_params.minimum_substantial_core_px)
-        if int(two.cores_separated.sum()) != 44:
-            raise AssertionError("accepted Issue 003 lost a reviewed two-cell case")
-        if int(under.cores_separated.sum()) != 45:
-            raise AssertionError("accepted Issue 003 lost an under-segmentation")
-        if int(singles.gate_passed.sum()) != 15:
-            raise AssertionError("accepted Issue 003 split a genuine single cell")
-        if int(uncertain.cores_separated.sum()) != 0:
-            raise AssertionError("accepted Issue 003 changed an uncertain case")
         if len(conflicts):
-            raise AssertionError("accepted Issue 003 duplicated a soma identity")
+            raise AssertionError("layered-lineage output duplicated a soma identity")
         if not np.array_equal(candidate > 0, baseline > 0):
-            raise AssertionError("accepted Issue 003 changed foreground support")
-        if len(set(map(int, np.unique(candidate))) - {0}) != 112:
-            raise AssertionError("accepted Issue 003 identity count is not 112")
-        if not np.all(np.any(candidate[54:101] == 58, axis=(1, 2))):
-            raise AssertionError("accepted Issue 002 identity 58 was interrupted")
+            raise AssertionError("layered-lineage output changed foreground support")
 
         inferred = candidate != baseline
         frame_table, tracks = _identity_tables(candidate, raw, inferred)
@@ -884,8 +889,11 @@ def stage_m19_accepted(
             "inferred": run.dir / "mid" / f"{stem}_inferred_layered_lineage.tif",
             "shape_events": run.dir / "out" / "shape_ledger_events.csv",
             "shape_frames": run.dir / "out" / "shape_ledger_frames.csv",
+            "structural_objects": run.dir / "out" / "two_core_objects.csv",
+            "structural_runs": run.dir / "out" / "two_core_runs.csv",
             "soma_audit": run.dir / "out" / "physical_soma_observations.csv",
-            "three_cell_partitions": run.dir / "out" / "three_cell_partition.csv",
+            "bookend_observation_audit": run.dir / "out" /
+                "bookend_observation_audit.csv",
             "comparison_links": run.dir / "out" / "comparison_links.csv",
             "comparison_evidence": run.dir / "mid" / "comparison_evidence.csv",
             "comparison_aliases": run.dir / "out" / "comparison_aliases.csv",
@@ -899,9 +907,8 @@ def stage_m19_accepted(
             "stable_confidence": run.dir / "out" / "stable_confidence.csv",
             "reunions": run.dir / "out" / "approved_lineage_reunions.csv",
             "reunion_candidates": run.dir / "mid" / "lineage_reunion_candidates.csv",
-            "reviewer_verdicts": run.dir / "out" / "approved_reviewer_verdicts.csv",
-            "gold_score": run.dir / "out" / "review_gold_standard_score.csv",
             "conflicts": run.dir / "out" / "co_present_soma_identity_conflicts.csv",
+            "motion_reservations": run.dir / "out" / "upstream_motion_reservations.csv",
             "outlines": run.dir / "qc" / f"{stem}_outline.tif",
         }
         save_stack(outputs["labels"], candidate,
@@ -920,8 +927,11 @@ def stage_m19_accepted(
         tracks.to_csv(outputs["tracks"], index=False)
         shape_events.to_csv(outputs["shape_events"], index=False)
         shape_frames.to_csv(outputs["shape_frames"], index=False)
+        objects.to_csv(outputs["structural_objects"], index=False)
+        structural_runs.to_csv(outputs["structural_runs"], index=False)
         soma_audit.to_csv(outputs["soma_audit"], index=False)
-        three_cell_partitions.to_csv(outputs["three_cell_partitions"], index=False)
+        bookend_observation_audit.to_csv(
+            outputs["bookend_observation_audit"], index=False)
         comparison_links.to_csv(outputs["comparison_links"], index=False)
         comparison_evidence.to_csv(outputs["comparison_evidence"], index=False)
         comparison_aliases.to_csv(outputs["comparison_aliases"], index=False)
@@ -935,21 +945,15 @@ def stage_m19_accepted(
         stable_confidence.to_csv(outputs["stable_confidence"], index=False)
         reunions.to_csv(outputs["reunions"], index=False)
         reunion_candidates.to_csv(outputs["reunion_candidates"], index=False)
-        reviewer.to_csv(outputs["reviewer_verdicts"], index=False)
-        score.to_csv(outputs["gold_score"], index=False)
         conflicts.to_csv(outputs["conflicts"], index=False)
+        motion_reservation_events.to_csv(outputs["motion_reservations"], index=False)
         save_rgb_stack(outputs["outlines"], outline_overlay(raw, candidate, thick=2),
                        cfg.values["frame_interval_min"])
         for label, path in outputs.items():
             run.record(label, path)
 
         output_sha = sha256(outputs["labels"])
-        if output_sha != accepted["approved_candidate_sha256"]:
-            raise AssertionError(
-                "accepted output file is not byte-identical to reviewed Attempt 019")
         summary = {
-            "human_review": "approved",
-            "accepted_into_base": True,
             "approved_lineage_reunions": int(len(reunions)),
             "layer_1_established_identities": int(len(protected_ids)),
             "global_identities_before": int(
@@ -957,15 +961,13 @@ def stage_m19_accepted(
             "global_identities_after": int(len(tracks)),
             "global_identity_reduction": int(
                 len(set(map(int, np.unique(baseline))) - {0}) - len(tracks)),
-            "confirmed_two_cell_cases": "44/44",
-            "reviewed_single_cells": "15/15",
-            "uncertain_cases_changed": 0,
-            "co_present_soma_identity_conflicts": 0,
+            "co_present_soma_identity_conflicts": int(len(conflicts)),
+            "motion_reserved_lineages": int(len(motion_reserved)),
             "foreground_support_unchanged": True,
-            "array_exact_to_attempt_019": True,
-            "file_sha_exact_to_attempt_019": True,
             "labels_sha256": output_sha,
         }
+        if history_inputs is not None:
+            history_inputs.physical_somas = physical
         run.finish(summary)
         return candidate, inferred, tracks
     except BaseException as error:
@@ -983,7 +985,6 @@ def stage_m20_accepted(
     run = Run("m20_oscillatory_lineage", run_name, {
         "stem": stem,
         "accepted_version": accepted["version"],
-        "approved_candidate": accepted["approved_candidate"],
         "mode": ("whole-movie lineage graph followed by non-conflicting "
                  "one-frame host partitions"),
         "lineage_graph": accepted["lineage_graph"],
@@ -993,17 +994,6 @@ def stage_m20_accepted(
     try:
         raw = load_stack(sources["registered_raw"])
         lag = load_stack(sources["lag_float"])
-        approval_path = ROOT / accepted["approval_record"]
-        approval = approval_path.read_text(encoding="utf-8")
-        if "I004-A006" not in approval or "accept Approach 3" not in approval:
-            raise AssertionError("Issue 004 approval record is incomplete")
-        reviewer = pd.read_csv(ROOT / accepted["approved_review_labels"])
-        approved_row = reviewer[
-            reviewer.variant.astype(str).eq("3")
-            & reviewer.verdict.astype(str).str.lower().eq("approved")]
-        if len(approved_row) != 1:
-            raise AssertionError("Approach 3 lacks one explicit approved verdict")
-
         lineage, lineage_decisions, lineage_candidates = optimise_lineage_graph(
             baseline, lag, accepted["lineage_graph"],
             int(accepted["minimum_substantial_core_px"]))
@@ -1011,44 +1001,12 @@ def stage_m20_accepted(
             lineage, raw, lag, accepted["host_merge_graph"],
             cfg.values["accepted_postprocessing"]["persistent_merges"])
 
-        reviewed_path = ROOT / accepted["approved_candidate"]
-        if sha256(reviewed_path) != accepted["approved_candidate_sha256"]:
-            raise AssertionError("approved Issue 004 candidate fingerprint changed")
-        reviewed = load_stack(reviewed_path)
-        if not np.array_equal(candidate, reviewed):
-            raise AssertionError(
-                "accepted Issue 004 rebuild differs from approved Approach 3")
-
-        gold = pd.read_csv(ROOT / accepted["review_benchmark"])
-        score = score_review_gold_standard(candidate, gold)
-        under = score[score.truth == "undersegmentation"]
-        two_ranks = set(gold.loc[gold.true_cell_count == 2, "review_rank"])
-        two = under[under.review_rank.isin(two_ranks)]
-        singles = score[score.truth == "single_cell"]
-        uncertain = score[score.truth == "uncertain"]
         conflicts = substantial_identity_conflicts(
             candidate, int(accepted["minimum_substantial_core_px"]))
-        if int(two.cores_separated.sum()) != 44:
-            raise AssertionError("accepted Issue 004 lost a reviewed two-cell case")
-        if int(under.cores_separated.sum()) != 45:
-            raise AssertionError("accepted Issue 004 lost an under-segmentation")
-        if int(singles.gate_passed.sum()) != 15:
-            raise AssertionError("accepted Issue 004 split a genuine single cell")
-        if int(uncertain.cores_separated.sum()) != 0:
-            raise AssertionError("accepted Issue 004 changed an uncertain case")
         if len(conflicts):
-            raise AssertionError("accepted Issue 004 duplicated a soma identity")
+            raise AssertionError("oscillatory-lineage output duplicated a soma identity")
         if not np.array_equal(candidate > 0, baseline > 0):
-            raise AssertionError("accepted Issue 004 changed foreground support")
-        identities = set(map(int, np.unique(candidate))) - {0}
-        if len(identities) != 111:
-            raise AssertionError("accepted Issue 004 identity count is not 111")
-        if np.any(candidate == 149):
-            raise AssertionError("accepted Issue 004 retained relay identity 149")
-        if not np.all(np.any(candidate == 55, axis=(1, 2))):
-            raise AssertionError("accepted Issue 004 identity 55 is not continuous")
-        if len(lineage_decisions) != 1 or len(host_decisions) != 7:
-            raise AssertionError("accepted Issue 004 decision count changed")
+            raise AssertionError("oscillatory-lineage output changed foreground support")
 
         inferred = candidate != baseline
         frame_table, tracks = _identity_tables(candidate, raw, inferred)
@@ -1061,8 +1019,6 @@ def stage_m20_accepted(
             "lineage_candidates": run.dir / "mid/lineage_graph_candidates.csv",
             "host_decisions": run.dir / "out/host_partition_graph_decisions.csv",
             "host_candidates": run.dir / "mid/host_partition_graph_candidates.csv",
-            "reviewer_verdict": run.dir / "out/approved_reviewer_verdict.csv",
-            "gold_score": run.dir / "out/review_gold_standard_score.csv",
             "conflicts": run.dir / "out/co_present_soma_identity_conflicts.csv",
             "outlines": run.dir / "qc" / f"{stem}_outline.tif",
         }
@@ -1076,8 +1032,6 @@ def stage_m20_accepted(
         lineage_candidates.to_csv(outputs["lineage_candidates"], index=False)
         host_decisions.to_csv(outputs["host_decisions"], index=False)
         host_candidates.to_csv(outputs["host_candidates"], index=False)
-        approved_row.to_csv(outputs["reviewer_verdict"], index=False)
-        score.to_csv(outputs["gold_score"], index=False)
         conflicts.to_csv(outputs["conflicts"], index=False)
         save_rgb_stack(outputs["outlines"],
                        outline_overlay(raw, candidate, thick=2),
@@ -1085,32 +1039,250 @@ def stage_m20_accepted(
         for label, path in outputs.items():
             run.record(label, path)
         output_sha = sha256(outputs["labels"])
-        if output_sha != accepted["approved_candidate_sha256"]:
-            raise AssertionError(
-                "accepted Issue 004 output is not byte-identical to Approach 3")
         summary = {
-            "human_review": "approved",
-            "accepted_into_base": True,
             "global_identities_before": int(len(
                 set(map(int, np.unique(baseline))) - {0})),
             "global_identities_after": len(tracks),
             "lineage_graph_decisions": int(len(lineage_decisions)),
             "host_partition_graph_decisions": int(len(host_decisions)),
-            "target_identity_55_frames": int(np.count_nonzero(
-                np.any(candidate == 55, axis=(1, 2)))),
-            "target_identity_149_removed": True,
-            "confirmed_two_cell_cases": "44/44",
-            "reviewed_single_cells": "15/15",
-            "uncertain_cases_changed": 0,
-            "co_present_soma_identity_conflicts": 0,
+            "co_present_soma_identity_conflicts": int(len(conflicts)),
             "foreground_support_unchanged": True,
             "registration_added": False,
-            "array_exact_to_attempt_006": True,
-            "file_sha_exact_to_attempt_006": True,
             "labels_sha256": output_sha,
         }
         run.finish(summary)
         return candidate, inferred, tracks
+    except BaseException as error:
+        run.fail(error)
+        raise
+
+
+def stage_m21_stationary_reconciliation(
+        cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
+        baseline: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    """Default-on field-wide repair of stationary identity takeovers."""
+    accepted = cfg.values["accepted_postprocessing"].get(
+        "field_wide_stationary_reconciliation", {})
+    enabled = bool(accepted.get("enabled", True))
+    params = reconciliation_params(accepted.get("parameters", {}))
+    params["enabled"] = enabled
+    _assert_identity_blind_params(params)
+    run = Run("m21_stationary_reconciliation", run_name, {
+        "stem": stem,
+        "accepted_version": accepted.get("version", "field-wide-v1"),
+        "targeting_mode": "field_wide_discovery",
+        "enabled": enabled,
+        "enabled_by_default": True,
+        "off_switch_supported": True,
+        "parameters": params,
+        "supplied_identity_count": 0,
+        "supplied_problem_frame_count": 0,
+    }, upstream=f"m20_oscillatory_lineage/{run_name}")
+    try:
+        raw_full = load_stack(sources["registered_raw"])
+        raw = align_stack(
+            raw_full, len(baseline),
+            int(accepted.get("source_frame_offset", 0)))
+        if raw.shape != baseline.shape:
+            raise ValueError("stationary reconciliation inputs do not align")
+        if enabled:
+            candidate, inferred, stationary_runs, events, evidence = (
+                discover_stationary_takeovers(baseline, raw, params))
+        else:
+            candidate = baseline.copy()
+            inferred = np.zeros(baseline.shape, bool)
+            stationary_runs = pd.DataFrame(columns=[
+                "run_id", "identity", "start_frame", "end_frame",
+                "observed_frames", "stationary_reference"])
+            events = pd.DataFrame(columns=[
+                "event_id", "resident_identity", "observed_identity",
+                "decision"])
+            evidence = pd.DataFrame(columns=PIXEL_COLUMNS)
+        if not np.array_equal(candidate > 0, baseline > 0):
+            raise AssertionError("stationary reconciliation changed foreground")
+        if not np.array_equal(inferred, candidate != baseline):
+            raise AssertionError("stationary reconciliation audit mask differs")
+        frame_table, tracks = _identity_tables(candidate, raw, inferred)
+        outputs = {
+            "labels": run.dir / "out" / f"{stem}.tif",
+            "frame_identities": run.dir / "out/frame_identities.csv",
+            "tracks": run.dir / "out/tracks.csv",
+            "inferred": run.dir / "mid" /
+                f"{stem}_inferred_stationary_reconciliation.tif",
+            "stationary_runs": run.dir / "out/stationary_component_runs.csv",
+            "events": run.dir / "out/stationary_takeover_events.csv",
+            "pixel_evidence": run.dir /
+                "out/stationary_takeover_pixel_evidence.csv",
+            "outlines": run.dir / "qc" / f"{stem}_outline.tif",
+        }
+        save_stack(outputs["labels"], candidate, cfg.values["frame_interval_min"])
+        save_stack(outputs["inferred"], inferred.astype(np.uint8),
+                   cfg.values["frame_interval_min"])
+        frame_table.to_csv(outputs["frame_identities"], index=False)
+        tracks.to_csv(outputs["tracks"], index=False)
+        stationary_runs.to_csv(outputs["stationary_runs"], index=False)
+        events.to_csv(outputs["events"], index=False)
+        evidence.to_csv(outputs["pixel_evidence"], index=False)
+        save_rgb_stack(outputs["outlines"],
+                       outline_overlay(raw, candidate, thick=2,
+                                       inferred=inferred),
+                       cfg.values["frame_interval_min"])
+        for label, path in outputs.items():
+            run.record(label, path)
+        accepted_events = int(events["decision"].astype(str).str.startswith(
+            "accepted_field_wide_takeover").sum()) if len(events) else 0
+        run.finish({
+            "targeting_mode": "field_wide_discovery",
+            "enabled": enabled,
+            "enabled_by_default": True,
+            "off_switch_supported": True,
+            "supplied_identity_count": 0,
+            "supplied_problem_frame_count": 0,
+            "detected_events": int(len(events)),
+            "accepted_events": accepted_events,
+            "renamed_pixels": int(np.count_nonzero(inferred)),
+            "renamed_frames": int(np.count_nonzero(
+                np.any(inferred, axis=(1, 2)))),
+            "foreground_support_unchanged": True,
+        })
+        return candidate, inferred, tracks
+    except BaseException as error:
+        run.fail(error)
+        raise
+
+
+def _accepted_provenance(
+        stem: str, source_run: str, labels: np.ndarray, inferred: np.ndarray,
+        observations: np.ndarray, upstream_inferred: np.ndarray | None,
+        unresolved: np.ndarray | None,
+        oscillatory_inferred: np.ndarray | None,
+        ) -> tuple[np.ndarray | None, dict]:
+    """Build the sidecar for the accepted labels, or explain why there is none.
+
+    Saving costs nothing when the caller hands over the arrays it already
+    holds: no stack is recomputed and none is read back. `observations` is the
+    segmentation this whole run was built from, still in memory, and it is what
+    separates an outline the tracker supplied from a name the tracker worked
+    out. An incomplete record would mark reconstructed pixels as observed, so a
+    gap means no file.
+    """
+    in_memory = (upstream_inferred is not None and unresolved is not None
+                 and oscillatory_inferred is not None)
+    if in_memory:
+        reconstructed = _align_review_stack(upstream_inferred, len(labels)).copy()
+        reconstructed |= _align_review_stack(oscillatory_inferred, len(labels))
+        undecided = _align_review_stack(unresolved, len(labels))
+        source = "in-memory stage records"
+    else:
+        try:
+            reconstructed, undecided = collect_provenance(
+                stem, source_run, len(labels), include_history=False)
+        except (FileNotFoundError, ValueError) as error:
+            return None, {
+                "provenance": f"no sidecar: incomplete reconstruction record "
+                              f"under {source_run} ({error})",
+            }
+        source = f"stage records read back from {source_run}"
+    detected = _align_review_stack(observations, len(labels)) > 0
+    provenance = pack_provenance(
+        reconstructed | inferred, undecided, labels, detected)
+    return provenance, {"provenance_source": source,
+                        **provenance_metrics(provenance, labels)}
+
+
+def stage_m22_accepted_history(
+        cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
+        m20_labels: np.ndarray, observations: np.ndarray,
+        observation_table: pd.DataFrame, anchor_t: int,
+        source_run_name: str | None = None,
+        checkpoint_run_name: str | None = None,
+        history_inputs: AcceptedHistoryInputs | None = None,
+        m20_result_future: Future | None = None,
+        upstream_inferred: np.ndarray | None = None,
+        unresolved: np.ndarray | None = None,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
+    """Run the complete accepted Issue 005-039 history on current inputs.
+
+    `upstream_inferred` and `unresolved` are the reconstruction records the
+    caller already holds for every stage before M20; supplying them lets this
+    stage save a provenance sidecar without reading a single stack back from
+    disk. When they are absent the stage tries to read them, and writes no
+    sidecar at all rather than an incomplete one.
+    """
+    source_run = source_run_name or run_name
+    run = Run("m22_accepted_history", run_name, {
+        "stem": stem,
+        "source_frame_offset": 2,
+        "targeting_mode": "field_wide_discovery",
+        "identity_target_count": 0,
+        "coordinate_target_count": 0,
+        "source_run": source_run,
+        "checkpoint_run": checkpoint_run_name,
+    }, upstream=f"m20_oscillatory_lineage/{source_run}")
+    try:
+        work = run.dir / "mid" / "accepted_history"
+        if checkpoint_run_name:
+            checkpoint_work = (ROOT / "m22_accepted_history" /
+                               checkpoint_run_name / "mid" /
+                               "accepted_history")
+            if not checkpoint_work.is_dir():
+                raise FileNotFoundError(
+                    f"accepted-history checkpoints not found: {checkpoint_work}")
+            shutil.copytree(checkpoint_work, work, dirs_exist_ok=True)
+        labels, unclaimed, summary = run_accepted_history(
+            cfg, stem, run_name, sources, m20_labels, observations,
+            observation_table, anchor_t, work,
+            source_run_name=source_run, history_inputs=history_inputs)
+        oscillatory_inferred = None
+        if m20_result_future is not None:
+            m20_labels, oscillatory_inferred, _ = m20_result_future.result()
+        if len(m20_labels) != len(labels) + 2:
+            raise ValueError(
+                "complete accepted history requires two source frames before "
+                "the accepted 99-frame review stack")
+        raw = load_stack(sources["registered_raw"])[2:2 + len(labels)]
+        inferred = labels != m20_labels[2:2 + len(labels)]
+        frame_table, tracks = _identity_tables(labels, raw, inferred)
+        provenance, provenance_summary = _accepted_provenance(
+            stem, source_run, labels, inferred, observations,
+            upstream_inferred, unresolved, oscillatory_inferred)
+        outputs = {
+            "labels": run.dir / "out" / f"{stem}.tif",
+            "unclaimed": run.dir / "out" /
+                f"{stem}_unclaimed_original_ids.tif",
+            "inferred": run.dir / "mid" /
+                f"{stem}_inferred_accepted_history.tif",
+            "frame_identities": run.dir / "out" / "frame_identities.csv",
+            "tracks": run.dir / "out" / "tracks.csv",
+            "history_summary": run.dir / "out" / "accepted_history_summary.json",
+        }
+        # Preserve the accepted stage's exact TIFF byte encoding.
+        shutil.copyfile(work / f"{stem}.tif", outputs["labels"])
+        shutil.copyfile(
+            work / f"{stem}_unclaimed_original_ids.tif", outputs["unclaimed"])
+        save_stack(outputs["inferred"], inferred.astype(np.uint8),
+                   cfg.values["frame_interval_min"])
+        if provenance is not None:
+            outputs["provenance"] = run.dir / "out" / f"{stem}_provenance.tif"
+            save_stack(outputs["provenance"], provenance,
+                       cfg.values["frame_interval_min"])
+        frame_table.to_csv(outputs["frame_identities"], index=False)
+        tracks.to_csv(outputs["tracks"], index=False)
+        write_json(outputs["history_summary"], summary)
+        for label, path in outputs.items():
+            run.record(label, path)
+        run.finish({
+            **summary,
+            "targeting_mode": "field_wide_discovery",
+            "final_frames": int(len(labels)),
+            "foreground_accounting_disjoint": bool(not np.any(
+                (labels > 0) & (unclaimed > 0))),
+            "labels_sha256": sha256(outputs["labels"]),
+            "unclaimed_sha256": sha256(outputs["unclaimed"]),
+            **provenance_summary,
+        })
+        return labels, unclaimed, inferred, tracks
     except BaseException as error:
         run.fail(error)
         raise
@@ -1130,6 +1302,136 @@ def _motion_rgb(raw: np.ndarray, composite: np.ndarray, labels: np.ndarray) -> n
     out[edge] = OUTLINE_COLOURS[(labels[edge].astype(np.int64) - 1)
                                 % len(OUTLINE_COLOURS)]
     return out
+
+
+def _align_review_stack(array: np.ndarray, frames: int) -> np.ndarray:
+    """Align full-source masks to the accepted tail after frame removal."""
+    if len(array) < frames:
+        raise ValueError(
+            f"review stack has {len(array)} frames but labels have {frames}")
+    return array[len(array) - frames:]
+
+
+PROVENANCE_INFERRED = 0b001
+PROVENANCE_UNRESOLVED = 0b010
+PROVENANCE_ADDED = 0b100
+
+# Every stage that can rewrite pixel ownership records what it reconstructed in
+# a boolean stack under its own mid/ folder. Entries are
+# (stage, file name, required when an accepted base exists, needs alignment).
+# The m22 stack is already in accepted-frame space and is the one that is not
+# realigned; the rest are full-source and get trimmed to the accepted tail.
+_INFERRED_STACKS = (
+    ("m8_merge", "{stem}_inferred_merge_pixels.tif", True, True),
+    ("m9_alias", "{stem}_inferred_global_alias_pixels.tif", True, True),
+    ("m12_identity_reservation",
+     "{stem}_inferred_identity_reservation.tif", False, True),
+    ("m19_layered_lineage",
+     "{stem}_inferred_layered_lineage.tif", False, True),
+    ("m20_oscillatory_lineage",
+     "{stem}_inferred_oscillatory_lineage.tif", False, True),
+    ("m21_stationary_reconciliation",
+     "{stem}_inferred_stationary_reconciliation.tif", False, True),
+    ("m22_accepted_history",
+     "{stem}_inferred_accepted_history.tif", False, False),
+)
+
+
+def collect_provenance(stem: str, upstream_run: str, frames: int,
+                       accepted: bool = True, include_history: bool = True,
+                       ) -> tuple[np.ndarray, np.ndarray]:
+    """Union every stage's reconstruction record, aligned to `frames`.
+
+    Returns two boolean stacks: pixels whose ownership a stage reconstructed
+    rather than observed, and foreground the tracker never resolved. This is
+    the accumulation `run_review_only` used to perform inline, factored out so
+    the review overlay and the saved provenance sidecar cannot drift apart.
+
+    It reads the stacks back from disk, so it belongs to resume and backfill
+    paths only. A full run already holds these arrays in memory and hands them
+    to `stage_m22_accepted_history` instead.
+    """
+    def mid(stage: str) -> Path:
+        return ROOT / stage / upstream_run / "mid"
+
+    inferred = _align_review_stack(
+        load_stack(mid("m4_events") / f"{stem}_inferred_pixels.tif").astype(bool),
+        frames)
+    if accepted:
+        for stage, template, required, align in _INFERRED_STACKS:
+            if stage == "m22_accepted_history" and not include_history:
+                continue
+            path = mid(stage) / template.format(stem=stem)
+            if not path.is_file():
+                if required:
+                    raise FileNotFoundError(
+                        f"accepted reconstruction record is missing: {path}")
+                continue
+            stack = load_stack(path).astype(bool)
+            inferred = inferred | (_align_review_stack(stack, frames)
+                                   if align else stack)
+    unresolved = _align_review_stack(
+        load_stack(mid("m4_events") / f"{stem}_unresolved_pixels.tif").astype(bool),
+        frames)
+    return inferred, unresolved
+
+
+def pack_provenance(inferred: np.ndarray, unresolved: np.ndarray,
+                    labels: np.ndarray, detected: np.ndarray) -> np.ndarray:
+    """Pack the reconstruction records into one uint8 stack of bit flags.
+
+    `detected` is the segmentation's own foreground, before any identity was
+    assigned: where the microscope showed something. It separates the two very
+    different things bit 0 otherwise merges. An outline pixel with nothing
+    detected under it is one the tracker supplied itself (bit 2); an outline
+    pixel with something detected under it was shown by the microscope and only
+    its owner was worked out (bit 0 alone). On the accepted 95_A3 that is 572
+    pixels against 403,765, which is the difference between "the tracker drew
+    this cell" and "the tracker named this cell".
+    """
+    wrong = {name: array.shape for name, array in
+             (("inferred", inferred), ("unresolved", unresolved),
+              ("detected", detected)) if array.shape != labels.shape}
+    if wrong:
+        raise AssertionError(
+            f"provenance {wrong} does not match labels {labels.shape}; a "
+            "sidecar not aligned to the final labels is worse than none")
+    provenance = np.zeros(labels.shape, np.uint8)
+    provenance[inferred] |= PROVENANCE_INFERRED
+    provenance[unresolved] |= PROVENANCE_UNRESOLVED
+    provenance[(labels > 0) & ~detected] |= PROVENANCE_ADDED
+    return provenance
+
+
+def provenance_metrics(provenance: np.ndarray, labels: np.ndarray) -> dict:
+    """Pixel counts a reader needs in order to weigh the accepted stack."""
+    inferred = (provenance & PROVENANCE_INFERRED).astype(bool)
+    unresolved = (provenance & PROVENANCE_UNRESOLVED).astype(bool)
+    added = (provenance & PROVENANCE_ADDED).astype(bool)
+    labelled = labels > 0
+    labelled_px = int(np.count_nonzero(labelled))
+    inferred_labelled = int(np.count_nonzero(inferred & labelled))
+    added_px = int(np.count_nonzero(added))
+    return {
+        "provenance_labelled_px": labelled_px,
+        "provenance_inferred_px": int(np.count_nonzero(inferred)),
+        "provenance_inferred_labelled_px": inferred_labelled,
+        "provenance_added_px": added_px,
+        "provenance_renamed_labelled_px": int(
+            np.count_nonzero(inferred & labelled & ~added)),
+        # Bit 2 without bit 0 would be an outline pixel the detection never saw
+        # that no stage owns up to having supplied. It should not happen; if it
+        # ever does, the number says so instead of the sidecar hiding it.
+        "provenance_added_unflagged_px": int(
+            np.count_nonzero(added & ~inferred)),
+        "provenance_unresolved_px": int(np.count_nonzero(unresolved)),
+        "provenance_unresolved_unlabelled_px": int(
+            np.count_nonzero(unresolved & ~labelled)),
+        "provenance_inferred_fraction_of_labelled": (
+            round(inferred_labelled / labelled_px, 6) if labelled_px else 0.0),
+        "provenance_added_fraction_of_labelled": (
+            round(added_px / labelled_px, 6) if labelled_px else 0.0),
+    }
 
 
 def _annotate_review(stack: np.ndarray, anchor_t: int) -> np.ndarray:
@@ -1161,14 +1463,23 @@ def stage_m6(cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
                "accepted_base": accepted_base},
               upstream=f"{upstream_stage}/{upstream_run or run_name}")
     try:
-        raw = load_stack(sources["registered_raw"])
+        raw_full = load_stack(sources["registered_raw"])
+        source_offset = len(raw_full) - len(labels)
+        if source_offset < 0:
+            raise ValueError("accepted labels are longer than registered raw")
+        raw = raw_full[source_offset:source_offset + len(labels)]
         composite = load_stack(sources["motion_composite"])
+        if source_offset:
+            composite = composite[min(source_offset, len(composite)):]
+        inferred = _align_review_stack(inferred, len(labels))
+        unresolved = _align_review_stack(unresolved, len(labels))
+        review_anchor_t = max(0, anchor_t - source_offset)
         identity_view = outline_overlay(raw, labels, thick=2)
         motion_view = _motion_rgb(raw, composite, labels)
         event_view = outline_overlay(raw, labels, thick=2, inferred=inferred,
                                      unresolved=unresolved)
         review = np.concatenate([identity_view, motion_view, event_view], axis=2)
-        review = _annotate_review(review, anchor_t)
+        review = _annotate_review(review, review_anchor_t)
         identity_path = run.dir / "out" / f"{stem}_full_field_outlines.tif"
         review_path = run.dir / "out" / f"{stem}_full_field_review.tif"
         event_path = run.dir / "out" / "event_index.csv"
@@ -1181,7 +1492,8 @@ def stage_m6(cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
         counts = np.array([len(np.unique(frame)) - 1 for frame in labels])
         pd.DataFrame([{
             "stem": stem, "frames": len(labels), "field_height_px": labels.shape[1],
-            "field_width_px": labels.shape[2], "anchor_imagej_frame": anchor_t + 1,
+            "field_width_px": labels.shape[2],
+            "anchor_imagej_frame": review_anchor_t + 1,
             "global_identities": len(tracks),
             "median_identities_per_frame": float(np.median(counts)),
             "minimum_identities_per_frame": int(counts.min()),
@@ -1205,7 +1517,7 @@ def stage_m6(cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
             feedback_path.write_text(
                 "# Motion base reviewer feedback\n\n"
                 "- Reviewer: Jamie\n"
-                "- Complete 101-frame identity outlines: pending\n"
+                f"- Complete {len(labels)}-frame identity outlines: pending\n"
                 "- Motion-supported fast cells: pending\n"
                 "- Cyan inferred merge partitions: pending\n"
                 "- Magenta unresolved events: pending\n"
@@ -1220,7 +1532,7 @@ def stage_m6(cfg: Config, stem: str, run_name: str, sources: dict[str, Path],
             f"The automatically selected anchor is ImageJ frame {anchor_t + 1}. "
             + ("This run reproduces the accepted Issue 001 to Issue 003 corrections.\n"
                if accepted_base else
-               "Review all 101 frames before approving the base. Record the decision in `reviewer_feedback.md`.\n"),
+               f"Review all {len(labels)} frames before approving the base. Record the decision in `reviewer_feedback.md`.\n"),
             encoding="utf-8")
         for label, path in (("outlines", identity_path), ("full_review", review_path),
                             ("event_index", event_path), ("scorecard", score_path),
@@ -1243,7 +1555,7 @@ def run_base(run_name: str, stem: str, config_path: Path | None = None) -> None:
     stages = ("m0_inputs", "m1_motion", "m2_anchor", "m3_track",
               "m4_events", "m5_reconcile", "m7_persistence", "m8_merge",
               "m9_alias", "m12_identity_reservation", "m19_layered_lineage",
-              "m20_oscillatory_lineage",
+              "m20_oscillatory_lineage", "m22_accepted_history",
               "m6_review")
     existing = [ROOT / stage / run_name for stage in stages
                 if (ROOT / stage / run_name).exists()]
@@ -1264,25 +1576,286 @@ def run_base(run_name: str, stem: str, config_path: Path | None = None) -> None:
         cfg, stem, run_name, sources, persistent)
     aliased, alias_inferred, _ = stage_m9_accepted(
         cfg, stem, run_name, sources, merged)
+    history_inputs = AcceptedHistoryInputs()
     reserved, reservation_inferred, _ = stage_m12_accepted(
         cfg, stem, run_name, sources, aliased, observations,
-        observation_table, anchor_t)
+        observation_table, anchor_t, history_inputs=history_inputs)
     final, lineage_inferred, tracks = stage_m19_accepted(
         cfg, stem, run_name, sources, reserved, observations,
-        observation_table, anchor_t)
-    final, oscillatory_inferred, tracks = stage_m20_accepted(
-        cfg, stem, run_name, sources, final)
-    final_inferred = (inferred | merge_inferred | alias_inferred
-                      | reservation_inferred | lineage_inferred
-                      | oscillatory_inferred)
-    stage_m6(cfg, stem, run_name, sources, final, events, final_inferred, unresolved,
+        observation_table, anchor_t, history_inputs=history_inputs)
+    m19_labels = final
+    pre_oscillatory_inferred = (inferred | merge_inferred | alias_inferred
+                                | reservation_inferred | lineage_inferred)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        m20_future = executor.submit(
+            stage_m20_accepted, cfg, stem, run_name, sources,
+            m19_labels.copy())
+        m22_future = executor.submit(
+            stage_m22_accepted_history,
+            cfg, stem, run_name, sources, m19_labels.copy(), observations,
+            observation_table, anchor_t,
+            history_inputs=history_inputs,
+            m20_result_future=m20_future,
+            upstream_inferred=pre_oscillatory_inferred,
+            unresolved=unresolved)
+        _, oscillatory_inferred, _ = m20_future.result()
+        final, _, history_inferred, tracks = m22_future.result()
+    upstream_inferred = pre_oscillatory_inferred | oscillatory_inferred
+    final_inferred = (_align_review_stack(upstream_inferred, len(final))
+                      | history_inferred)
+    stage_m6(cfg, stem, run_name, sources, final, events, final_inferred,
+             _align_review_stack(unresolved, len(final)),
              anchor_t, tracks, upstream_run=run_name,
-             upstream_stage="m20_oscillatory_lineage",
+             upstream_stage="m22_accepted_history",
              accepted_base=True)
     print(f"DONE {stem} {run_name}: accepted labels "
-          f"m20_oscillatory_lineage/{run_name}/out/"
+          f"m22_accepted_history/{run_name}/out/"
           f"{stem}.tif; review m6_review/{run_name}/out/"
           f"{stem}_full_field_review.tif")
+
+
+def _load_anchor_inputs(stem: str, run_name: str) -> tuple[np.ndarray, pd.DataFrame, int]:
+    root = ROOT / "m2_anchor" / run_name / "out"
+    observations = load_stack(root / f"{stem}_observations.tif")
+    observation_table = pd.read_csv(root / "observations.csv")
+    anchor_t = int(read_json(root / "anchor.json")["t"])
+    return observations, observation_table, anchor_t
+
+
+def run_accepted_only(run_name: str, upstream_run: str, stem: str,
+                      config_path: Path | None = None,
+                      checkpoint_run_name: str | None = None,
+                      anchor_run_name: str | None = None) -> None:
+    """Resume at M22 from an already completed current-experiment M20 run."""
+    cfg = Config.load(config_path)
+    if stem not in cfg.stems:
+        raise ValueError(f"stem {stem!r} is not configured: {cfg.stems}")
+    if (ROOT / "m22_accepted_history" / run_name).exists():
+        raise FileExistsError(
+            f"immutable accepted run already exists: m22_accepted_history/{run_name}")
+    sources = _pinned_paths(cfg, stem)
+    _verify_pins(cfg, stem)
+    observations, observation_table, anchor_t = _load_anchor_inputs(
+        stem, anchor_run_name or upstream_run)
+    m20_path = (ROOT / "m20_oscillatory_lineage" / upstream_run /
+                "out" / f"{stem}.tif")
+    final = load_stack(m20_path)
+    history_inputs = load_history_inputs_from_run(stem, upstream_run)
+    stage_m22_accepted_history(
+        cfg, stem, run_name, sources, final, observations,
+        observation_table, anchor_t, source_run_name=upstream_run,
+        checkpoint_run_name=checkpoint_run_name,
+        history_inputs=history_inputs)
+    print(f"DONE {stem} {run_name}: accepted labels resumed from "
+          f"m20_oscillatory_lineage/{upstream_run}")
+
+
+def run_accepted_tail(run_name: str, parent_run: str, stem: str,
+                      config_path: Path | None = None) -> None:
+    """Append a newly accepted tail rule to an immutable accepted parent."""
+    cfg = Config.load(config_path)
+    if stem not in cfg.stems:
+        raise ValueError(f"stem {stem!r} is not configured: {cfg.stems}")
+    if (ROOT / "m22_accepted_history" / run_name).exists():
+        raise FileExistsError(
+            f"immutable accepted run already exists: m22_accepted_history/{run_name}")
+    sources = _pinned_paths(cfg, stem)
+    _verify_pins(cfg, stem)
+    parent = ROOT / "m22_accepted_history" / parent_run
+    parent_manifest_path = parent / "run.json"
+    if not parent_manifest_path.is_file():
+        raise FileNotFoundError(f"accepted parent is missing: {parent}")
+    parent_manifest = read_json(parent_manifest_path)
+    if parent_manifest.get("status") != "done":
+        raise RuntimeError(f"accepted parent is not done: {parent_run}")
+    parent_work = parent / "mid/accepted_history"
+    if not parent_work.is_dir():
+        raise FileNotFoundError(
+            f"accepted parent history is missing: {parent_work}")
+
+    run = Run("m22_accepted_history", run_name, {
+        "stem": stem,
+        "source_frame_offset": 2,
+        "targeting_mode": "field_wide_discovery",
+        "identity_target_count": 0,
+        "track_target_count": 0,
+        "frame_target_count": 0,
+        "coordinate_target_count": 0,
+        "event_target_count": 0,
+        "region_target_count": 0,
+        "source_run": parent_run,
+        "accepted_tail_parent": parent_run,
+    }, upstream=f"m22_accepted_history/{parent_run}")
+    try:
+        work = run.dir / "mid/accepted_history"
+        shutil.copytree(parent_work, work, dirs_exist_ok=True)
+        parent_labels_path = parent / "out" / f"{stem}.tif"
+        parent_unclaimed_path = (
+            parent / "out" / f"{stem}_unclaimed_original_ids.tif")
+        labels = load_stack(parent_labels_path)
+        unclaimed = load_stack(parent_unclaimed_path)
+        raw = load_stack(sources["registered_raw"])[2:2 + len(labels)]
+        candidate, candidate_unclaimed, audit, metrics = \
+            _well_issue001_isolated_pair_encounter_recovery(
+                labels, unclaimed, raw, cfg, work)
+        if not np.array_equal(candidate_unclaimed, unclaimed):
+            raise AssertionError(
+                "accepted isolated-pair tail changed the unclaimed ledger")
+        checkpoint = (
+            work / "44_well_issue001_isolated_pair_encounter_recovery.tif")
+        save_stack(checkpoint, candidate, cfg.values["frame_interval_min"])
+        checkpoint_unclaimed = work / (
+            "44_well_issue001_isolated_pair_encounter_recovery_unclaimed.tif")
+        shutil.copyfile(parent_unclaimed_path, checkpoint_unclaimed)
+        _save_final_labels(work / f"{stem}.tif", candidate)
+        shutil.copyfile(
+            parent_unclaimed_path,
+            work / f"{stem}_unclaimed_original_ids.tif")
+
+        delta = candidate != labels
+        parent_inferred_path = (
+            parent / "mid" / f"{stem}_inferred_accepted_history.tif")
+        inferred = (load_stack(parent_inferred_path).astype(bool) | delta)
+        frame_table, tracks = _identity_tables(candidate, raw, inferred)
+        outputs = {
+            "labels": run.dir / "out" / f"{stem}.tif",
+            "unclaimed": run.dir / "out" /
+                f"{stem}_unclaimed_original_ids.tif",
+            "inferred": run.dir / "mid" /
+                f"{stem}_inferred_accepted_history.tif",
+            "frame_identities": run.dir / "out" / "frame_identities.csv",
+            "tracks": run.dir / "out" / "tracks.csv",
+            "history_summary": run.dir / "out" /
+                "accepted_history_summary.json",
+        }
+        shutil.copyfile(work / f"{stem}.tif", outputs["labels"])
+        shutil.copyfile(parent_unclaimed_path, outputs["unclaimed"])
+        save_stack(outputs["inferred"], inferred.astype(np.uint8),
+                   cfg.values["frame_interval_min"])
+        frame_table.to_csv(outputs["frame_identities"], index=False)
+        tracks.to_csv(outputs["tracks"], index=False)
+        parent_provenance = parent / "out" / f"{stem}_provenance.tif"
+        if parent_provenance.is_file():
+            provenance = load_stack(parent_provenance).astype(np.uint8)
+            provenance[delta] |= PROVENANCE_INFERRED
+            outputs["provenance"] = (
+                run.dir / "out" / f"{stem}_provenance.tif")
+            save_stack(outputs["provenance"], provenance,
+                       cfg.values["frame_interval_min"])
+        summary = dict(parent_manifest.get("summary", {}))
+        summary.update({
+            "accepted_tail_parent": parent_run,
+            "isolated_pair_recovery_audit_rows": int(len(audit)),
+            "isolated_pair_recovery_applied_proposals": int(
+                metrics["applied_proposals"]),
+            "isolated_pair_recovery_applied_track_pairs": int(
+                metrics["applied_track_pairs"]),
+            "isolated_pair_recovery_changed_pixels": int(
+                metrics["changed_pixels"]),
+            "isolated_pair_recovery_changed_frames": int(
+                metrics["changed_frames"]),
+            "isolated_pair_recovery_absorbed_coreless_pixels": int(
+                metrics["absorbed_coreless_pixels"]),
+            "isolated_pair_recovery_reverted_duplicate_proposals": int(
+                metrics["reverted_duplicate_proposals"]),
+            "isolated_pair_recovery_reverted_crowded_proposals": int(
+                metrics["reverted_crowded_proposals"]),
+            "isolated_pair_recovery_identity_targets": 0,
+            "isolated_pair_recovery_track_targets": 0,
+            "isolated_pair_recovery_frame_targets": 0,
+            "isolated_pair_recovery_coordinate_targets": 0,
+            "isolated_pair_recovery_event_targets": 0,
+            "isolated_pair_recovery_region_targets": 0,
+            "isolated_pair_recovery_review_case_targets": 0,
+        })
+        write_json(outputs["history_summary"], summary)
+        for label, path in outputs.items():
+            run.record(label, path)
+        run.finish({
+            **summary,
+            "targeting_mode": "field_wide_discovery",
+            "final_frames": int(len(candidate)),
+            "foreground_accounting_disjoint": bool(not np.any(
+                (candidate > 0) & (candidate_unclaimed > 0))),
+            "labels_sha256": sha256(outputs["labels"]),
+            "unclaimed_sha256": sha256(outputs["unclaimed"]),
+        })
+    except BaseException as error:
+        run.fail(error)
+        raise
+    print(f"DONE {stem} {run_name}: accepted tail appended to "
+          f"m22_accepted_history/{parent_run}")
+
+
+def run_resume_after_m5(run_name: str, upstream_run: str, stem: str,
+                        config_path: Path | None = None) -> None:
+    """Resume a failed batch after its completed M5 stage without recomputing it."""
+    cfg = Config.load(config_path)
+    if stem not in cfg.stems:
+        raise ValueError(f"stem {stem!r} is not configured: {cfg.stems}")
+    stages = ("m7_persistence", "m8_merge", "m9_alias",
+              "m12_identity_reservation", "m19_layered_lineage",
+              "m20_oscillatory_lineage", "m22_accepted_history", "m6_review")
+    existing = [ROOT / stage / run_name for stage in stages
+                if (ROOT / stage / run_name).exists()]
+    if existing:
+        raise FileExistsError("immutable resumed run name already exists: "
+                              + ", ".join(map(str, existing)))
+    sources = _pinned_paths(cfg, stem)
+    _verify_pins(cfg, stem)
+    observations, observation_table, anchor_t = _load_anchor_inputs(
+        stem, upstream_run)
+    labels = load_stack(
+        ROOT / "m5_reconcile" / upstream_run / "out" / f"{stem}.tif")
+    events = pd.read_csv(
+        ROOT / "m4_events" / upstream_run / "out" / "events.csv")
+    inferred = load_stack(
+        ROOT / "m4_events" / upstream_run / "mid" /
+        f"{stem}_inferred_pixels.tif").astype(bool)
+    unresolved = load_stack(
+        ROOT / "m4_events" / upstream_run / "mid" /
+        f"{stem}_unresolved_pixels.tif").astype(bool)
+
+    persistent, _ = stage_m7_accepted(
+        cfg, stem, run_name, sources, labels, observations,
+        observation_table, anchor_t)
+    merged, merge_inferred, _ = stage_m8_accepted(
+        cfg, stem, run_name, sources, persistent)
+    aliased, alias_inferred, _ = stage_m9_accepted(
+        cfg, stem, run_name, sources, merged)
+    history_inputs = AcceptedHistoryInputs()
+    reserved, reservation_inferred, _ = stage_m12_accepted(
+        cfg, stem, run_name, sources, aliased, observations,
+        observation_table, anchor_t, history_inputs=history_inputs)
+    final, lineage_inferred, tracks = stage_m19_accepted(
+        cfg, stem, run_name, sources, reserved, observations,
+        observation_table, anchor_t, history_inputs=history_inputs)
+    m19_labels = final
+    pre_oscillatory_inferred = (inferred | merge_inferred | alias_inferred
+                                | reservation_inferred | lineage_inferred)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        m20_future = executor.submit(
+            stage_m20_accepted, cfg, stem, run_name, sources,
+            m19_labels.copy())
+        m22_future = executor.submit(
+            stage_m22_accepted_history,
+            cfg, stem, run_name, sources, m19_labels.copy(), observations,
+            observation_table, anchor_t,
+            history_inputs=history_inputs,
+            m20_result_future=m20_future,
+            upstream_inferred=pre_oscillatory_inferred,
+            unresolved=unresolved)
+        _, oscillatory_inferred, _ = m20_future.result()
+        final, _, history_inferred, tracks = m22_future.result()
+    upstream_inferred = pre_oscillatory_inferred | oscillatory_inferred
+    final_inferred = (_align_review_stack(upstream_inferred, len(final))
+                      | history_inferred)
+    stage_m6(cfg, stem, run_name, sources, final, events, final_inferred,
+             _align_review_stack(unresolved, len(final)),
+             anchor_t, tracks, upstream_run=run_name,
+             upstream_stage="m22_accepted_history", accepted_base=True)
+    print(f"DONE {stem} {run_name}: resumed after "
+          f"m5_reconcile/{upstream_run}")
 
 
 def run_review_only(run_name: str, upstream_run: str, stem: str,
@@ -1293,6 +1866,10 @@ def run_review_only(run_name: str, upstream_run: str, stem: str,
         raise FileExistsError(f"immutable review run already exists: {destination}")
     sources = _pinned_paths(cfg, stem)
     _verify_pins(cfg, stem)
+    complete_source = (ROOT / "m22_accepted_history" / upstream_run
+                       / "out" / f"{stem}.tif")
+    stationary_source = (ROOT / "m21_stationary_reconciliation" / upstream_run
+                         / "out" / f"{stem}.tif")
     oscillatory_source = (ROOT / "m20_oscillatory_lineage" / upstream_run
                           / "out" / f"{stem}.tif")
     layered_source = (ROOT / "m19_layered_lineage" / upstream_run
@@ -1300,7 +1877,9 @@ def run_review_only(run_name: str, upstream_run: str, stem: str,
     reservation_source = (ROOT / "m12_identity_reservation" / upstream_run
                           / "out" / f"{stem}.tif")
     alias_source = ROOT / "m9_alias" / upstream_run / "out" / f"{stem}.tif"
-    accepted_source = (oscillatory_source if oscillatory_source.is_file()
+    accepted_source = (complete_source if complete_source.is_file()
+                       else stationary_source if stationary_source.is_file()
+                       else oscillatory_source if oscillatory_source.is_file()
                        else layered_source if layered_source.is_file()
                        else reservation_source if reservation_source.is_file()
                        else alias_source)
@@ -1308,30 +1887,14 @@ def run_review_only(run_name: str, upstream_run: str, stem: str,
     labels = load_stack(accepted_source if accepted else
                         ROOT / "m5_reconcile" / upstream_run / "out" / f"{stem}.tif")
     events = pd.read_csv(ROOT / "m4_events" / upstream_run / "out" / "events.csv")
-    inferred = load_stack(ROOT / "m4_events" / upstream_run / "mid"
-                          / f"{stem}_inferred_pixels.tif").astype(bool)
-    if accepted:
-        inferred |= load_stack(ROOT / "m8_merge" / upstream_run / "mid"
-                               / f"{stem}_inferred_merge_pixels.tif").astype(bool)
-        inferred |= load_stack(ROOT / "m9_alias" / upstream_run / "mid"
-                               / f"{stem}_inferred_global_alias_pixels.tif").astype(bool)
-        reservation_inferred = (ROOT / "m12_identity_reservation" / upstream_run
-                                / "mid" / f"{stem}_inferred_identity_reservation.tif")
-        if reservation_inferred.is_file():
-            inferred |= load_stack(reservation_inferred).astype(bool)
-        lineage_inferred = (ROOT / "m19_layered_lineage" / upstream_run
-                            / "mid" / f"{stem}_inferred_layered_lineage.tif")
-        if lineage_inferred.is_file():
-            inferred |= load_stack(lineage_inferred).astype(bool)
-        oscillatory_inferred = (ROOT / "m20_oscillatory_lineage" / upstream_run
-                                / "mid" / f"{stem}_inferred_oscillatory_lineage.tif")
-        if oscillatory_inferred.is_file():
-            inferred |= load_stack(oscillatory_inferred).astype(bool)
-    unresolved = load_stack(ROOT / "m4_events" / upstream_run / "mid"
-                            / f"{stem}_unresolved_pixels.tif").astype(bool)
+    inferred, unresolved = collect_provenance(
+        stem, upstream_run, len(labels), accepted=accepted)
     anchor_t = int(read_json(ROOT / "m2_anchor" / upstream_run / "out"
                              / "anchor.json")["t"])
-    track_stage = ("m19_layered_lineage"
+    track_stage = ("m22_accepted_history" if complete_source.is_file()
+                   else "m21_stationary_reconciliation"
+                   if stationary_source.is_file()
+                   else "m19_layered_lineage"
                    if layered_source.is_file()
                    else "m12_identity_reservation" if reservation_source.is_file()
                    else "m9_alias" if accepted else "m5_reconcile")
@@ -1349,9 +1912,34 @@ def main() -> None:
     parser.add_argument("--stem", default="95_A3")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--review-only-from")
+    parser.add_argument("--accepted-only-from")
+    parser.add_argument("--accepted-tail-from")
+    parser.add_argument("--accepted-checkpoints-from")
+    parser.add_argument("--anchor-inputs-from")
+    parser.add_argument("--resume-after-m5-from")
     args = parser.parse_args()
+    modes = [args.review_only_from, args.accepted_only_from,
+             args.accepted_tail_from,
+             args.resume_after_m5_from]
+    if sum(value is not None for value in modes) > 1:
+        parser.error("choose only one resume/review mode")
+    if args.accepted_checkpoints_from and not args.accepted_only_from:
+        parser.error("--accepted-checkpoints-from requires --accepted-only-from")
+    if args.anchor_inputs_from and not args.accepted_only_from:
+        parser.error("--anchor-inputs-from requires --accepted-only-from")
     if args.review_only_from:
         run_review_only(args.run, args.review_only_from, args.stem, args.config)
+    elif args.accepted_only_from:
+        run_accepted_only(
+            args.run, args.accepted_only_from, args.stem, args.config,
+            checkpoint_run_name=args.accepted_checkpoints_from,
+            anchor_run_name=args.anchor_inputs_from)
+    elif args.accepted_tail_from:
+        run_accepted_tail(
+            args.run, args.accepted_tail_from, args.stem, args.config)
+    elif args.resume_after_m5_from:
+        run_resume_after_m5(
+            args.run, args.resume_after_m5_from, args.stem, args.config)
     else:
         run_base(args.run, args.stem, args.config)
 

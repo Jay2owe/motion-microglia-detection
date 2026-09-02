@@ -28,9 +28,17 @@ class IdentityState:
     bounds: tuple[int, int, int, int] | None = None
 
 
-def _shape_descriptor(mask: np.ndarray) -> np.ndarray:
+def _shape_descriptor(
+        mask: np.ndarray,
+        points: np.ndarray | None = None,
+        bounds: tuple[int, int, int, int] | None = None,
+        ) -> np.ndarray:
     """Scale-normalised body axes and perimeter for lineage comparison."""
-    points = np.column_stack(np.nonzero(mask)).astype(float)
+    if points is None:
+        yy, xx = np.nonzero(mask)
+        points = np.column_stack((yy, xx)).astype(float)
+    else:
+        points = np.asarray(points, float)
     if len(points) < 2:
         return np.zeros(3, float)
     centred = points - points.mean(axis=0)
@@ -38,7 +46,14 @@ def _shape_descriptor(mask: np.ndarray) -> np.ndarray:
     eigenvalues = np.sort(np.linalg.eigvalsh(covariance))[::-1]
     scale = np.sqrt(max(len(points), 1))
     axes = np.sqrt(np.maximum(eigenvalues, 0.0) + 1e-6) / scale
-    edge = mask ^ ndi.binary_erosion(mask, structure=np.ones((3, 3), bool))
+    if bounds is None:
+        y0, x0 = np.min(points, axis=0).astype(int)
+        y1, x1 = np.max(points, axis=0).astype(int) + 1
+    else:
+        y0, y1, x0, x1 = bounds
+    local = mask[y0:y1, x0:x1]
+    edge = local ^ ndi.binary_erosion(
+        local, structure=np.ones((3, 3), bool))
     return np.array([axes[0], axes[1], float(edge.sum()) / scale], float)
 
 
@@ -46,23 +61,30 @@ def frame_observations(labels: np.ndarray, raw: np.ndarray,
                        green_tracks: dict[int, set[int]] | None = None,
                        preferred_identities: dict[int, int] | None = None,
                        protected_preferred: dict[int, bool] | None = None,
+                       include_shape: bool = True,
                        ) -> dict[int, dict]:
     result: dict[int, dict] = {}
-    for local_id in np.unique(labels):
-        local_id = int(local_id)
-        if local_id <= 0:
+    # Find every bounding box in one image pass, then measure coordinates only
+    # inside the object's box. The full mask is retained for downstream tracking.
+    for local_id, slices in enumerate(ndi.find_objects(labels), start=1):
+        if slices is None:
             continue
         mask = labels == local_id
-        yy, xx = np.nonzero(mask)
+        local_mask = mask[slices]
+        local_y, local_x = np.nonzero(local_mask)
+        y0, x0 = int(slices[0].start), int(slices[1].start)
+        yy, xx = local_y + y0, local_x + x0
+        bounds = (y0, int(slices[0].stop), x0, int(slices[1].stop))
+        points = np.column_stack((yy, xx)).astype(float)
         result[local_id] = {
             "local_id": local_id,
             "mask": mask,
             "position": np.array([yy.mean(), xx.mean()], float),
-            "bounds": (int(yy.min()), int(yy.max()) + 1,
-                       int(xx.min()), int(xx.max()) + 1),
-            "area": int(mask.sum()),
-            "mean": float(raw[mask].mean()),
-            "shape": _shape_descriptor(mask),
+            "bounds": bounds,
+            "area": int(len(yy)),
+            "mean": float(raw[slices][local_mask].mean()),
+            "shape": (_shape_descriptor(mask, points, bounds)
+                      if include_shape else None),
             "green_track_ids": set() if green_tracks is None
                                else set(green_tracks.get(local_id, set())),
             "preferred_identity": 0 if preferred_identities is None
@@ -71,6 +93,57 @@ def frame_observations(labels: np.ndarray, raw: np.ndarray,
                 False if protected_preferred is None
                 else bool(protected_preferred.get(local_id, False))),
         }
+    return result
+
+
+def _tracking_lookups(
+        observation_table: pd.DataFrame | None,
+        ) -> tuple[dict, dict, dict]:
+    green_lookup: dict[tuple[int, int], set[int]] = {}
+    preferred_lookup: dict[tuple[int, int], int] = {}
+    protected_lookup: dict[tuple[int, int], bool] = {}
+    if observation_table is not None and len(observation_table):
+        for row in observation_table.itertuples():
+            text = str(row.green_track_ids)
+            tracks = set() if text in ("", "nan") else {
+                int(value) for value in text.split(";") if value}
+            green_lookup[int(row.t), int(row.local_id)] = tracks
+            if hasattr(row, "preferred_identity") and not pd.isna(
+                    row.preferred_identity):
+                preferred_lookup[int(row.t), int(row.local_id)] = int(
+                    row.preferred_identity)
+            if (hasattr(row, "preferred_identity_protected")
+                    and not pd.isna(row.preferred_identity_protected)):
+                protected_lookup[int(row.t), int(row.local_id)] = bool(
+                    row.preferred_identity_protected)
+    return green_lookup, preferred_lookup, protected_lookup
+
+
+def prepare_tracking_observations(
+        observation_labels: np.ndarray, raw: np.ndarray,
+        ) -> list[dict[int, dict]]:
+    """Prepare immutable geometry and intensity for repeated tracking passes."""
+    return [frame_observations(observation_labels[t], raw[t])
+            for t in range(len(observation_labels))]
+
+
+def _attach_tracking_metadata(
+        prepared: list[dict[int, dict]],
+        green: dict[tuple[int, int], set[int]],
+        preferred: dict[tuple[int, int], int],
+        protected: dict[tuple[int, int], bool],
+        ) -> list[dict[int, dict]]:
+    result: list[dict[int, dict]] = []
+    for t, frame in enumerate(prepared):
+        rows: dict[int, dict] = {}
+        for local, observation in frame.items():
+            row = dict(observation)
+            row["green_track_ids"] = set(green.get((t, local), set()))
+            row["preferred_identity"] = int(preferred.get((t, local), 0))
+            row["preferred_identity_protected"] = bool(
+                protected.get((t, local), False))
+            rows[local] = row
+        result.append(rows)
     return result
 
 
@@ -129,12 +202,15 @@ def link_features(state: IdentityState, observation: dict, target_t: int,
     steps = abs(int(target_t) - int(state.t))
     predicted = state.position + state.velocity * max(steps, 1)
     preferred_identity = int(observation.get("preferred_identity", 0))
-    hard_reserved = {
-        int(value) for value in params.get("hard_reserved_identity_ids", [])}
-    if state.identity in hard_reserved and state.identity == preferred_identity:
-        # Reserved fast movers are located by their blue-to-red destination from
-        # the last actual soma, not by a velocity extrapolation that can overshoot
-        # after abrupt turns.
+    motion_reserved = params.get("_motion_reservation_identity_set")
+    if motion_reserved is None:
+        motion_reserved = {
+            int(value) for value in params.get(
+                "motion_reservation_identities", [])}
+    if state.identity in motion_reserved and state.identity == preferred_identity:
+        # A lineage with an accepted upstream motion-host event is located from its
+        # last observed soma. Constant-velocity prediction can overshoot after the
+        # abrupt turn that produced the reservation event.
         predicted = state.position.copy()
     distance = float(np.linalg.norm(predicted - observation["position"]))
     observed_displacement = float(np.linalg.norm(
@@ -237,27 +313,22 @@ def link_features(state: IdentityState, observation: dict, target_t: int,
                and float(params["minimum_area_ratio"]) <= area_ratio
                <= float(params["maximum_area_ratio"])
                and mean_change <= float(params["maximum_mean_log2_change"]))
-    if state.identity in hard_reserved or preferred_identity in hard_reserved:
-        reserved_distance = float(params.get(
-            "hard_reserved_max_link_px", params["max_link_px"]))
-        reserved_minimum_area = float(params.get(
-            "hard_reserved_minimum_area_ratio", params["minimum_area_ratio"]))
-        reserved_maximum_area = float(params.get(
-            "hard_reserved_maximum_area_ratio", params["maximum_area_ratio"]))
-        maximum_distance = max(
-            maximum_distance, reserved_distance * np.sqrt(max(steps, 1)))
+    if state.identity in motion_reserved or preferred_identity in motion_reserved:
         allowed = bool(
             state.identity == preferred_identity
-            and distance <= maximum_distance
-            and observed_displacement <= float(params.get(
-                "hard_reserved_max_link_px", maximum_recovery_distance))
-            and reserved_minimum_area <= area_ratio <= reserved_maximum_area
+            and distance <= max(maximum_distance,
+                                maximum_recovery_distance * np.sqrt(max(steps, 1)))
+            and observed_displacement <= maximum_recovery_distance
+            and float(params["minimum_area_ratio"]) <= area_ratio
+            <= float(params["maximum_area_ratio"])
             and mean_change <= float(params["maximum_mean_log2_change"]))
     effective_distance = (observed_displacement
                           if fast_motion or reversal_aware else distance)
     effective_reversal_penalty = 0.0 if reversal_aware else reversal_penalty
-    high_ids = {int(value) for value in params.get(
-        "high_confidence_identity_ids", [])}
+    high_ids = params.get("_high_confidence_identity_set")
+    if high_ids is None:
+        high_ids = {int(value) for value in params.get(
+            "high_confidence_identity_ids", [])}
     preferred_reward = float(params.get("preferred_identity_reward", 0.0))
     if high_ids and state.identity not in high_ids:
         preferred_reward = float(params.get(
@@ -1015,15 +1086,18 @@ def _anchor_states(observation_labels: np.ndarray, raw: np.ndarray,
                    , anchor_identity_map: dict[int, int] | None = None,
                    preferred_lookup: dict[tuple[int, int], int] | None = None,
                    protected_lookup: dict[tuple[int, int], bool] | None = None,
+                   prepared_observations: dict[int, dict] | None = None,
                    ) -> tuple[dict[int, IdentityState], np.ndarray, int]:
     tracks = {local: value for (t, local), value in green_lookup.items() if t == anchor_t}
     preferred = {local: value for (t, local), value in
                  (preferred_lookup or {}).items() if t == anchor_t}
     protected = {local: value for (t, local), value in
                  (protected_lookup or {}).items() if t == anchor_t}
-    observations = frame_observations(
-        observation_labels[anchor_t], raw[anchor_t], tracks, preferred,
-        protected)
+    observations = (prepared_observations
+                    if prepared_observations is not None
+                    else frame_observations(
+                        observation_labels[anchor_t], raw[anchor_t], tracks,
+                        preferred, protected))
     ordered = sorted(observations.values(), key=lambda row: (row["y"] if "y" in row else row["position"][0],
                                                               row["x"] if "x" in row else row["position"][1]))
     states: dict[int, IdentityState] = {}
@@ -1058,6 +1132,7 @@ def track_direction(observation_labels: np.ndarray, raw: np.ndarray, lag: np.nda
                     , preferred_lookup: dict[tuple[int, int], int] | None = None,
                     protected_lookup: dict[tuple[int, int], bool] | None = None,
                     reserved_identity_ids: set[int] | None = None,
+                    prepared_observations: list[dict[int, dict]] | None = None,
                     ) -> tuple[np.ndarray, list[dict], int]:
     output = np.zeros(observation_labels.shape, np.uint16)
     states = {identity: IdentityState(
@@ -1074,15 +1149,24 @@ def track_direction(observation_labels: np.ndarray, raw: np.ndarray, lag: np.nda
                    else range(anchor_t - 1, -1, -1))
     direction_name = "forward" if direction > 0 else "backward"
     max_gap = int(params["max_gap_frames"])
+    green_by_frame: dict[int, dict[int, set[int]]] = {}
+    for (frame, local), value in green_lookup.items():
+        green_by_frame.setdefault(int(frame), {})[int(local)] = value
+    preferred_by_frame: dict[int, dict[int, int]] = {}
+    for (frame, local), value in (preferred_lookup or {}).items():
+        preferred_by_frame.setdefault(int(frame), {})[int(local)] = value
+    protected_by_frame: dict[int, dict[int, bool]] = {}
+    for (frame, local), value in (protected_lookup or {}).items():
+        protected_by_frame.setdefault(int(frame), {})[int(local)] = value
     for t in frame_range:
-        tracks = {local: value for (frame, local), value in green_lookup.items()
-                  if frame == t}
-        preferred = {local: value for (frame, local), value in
-                     (preferred_lookup or {}).items() if frame == t}
-        protected = {local: value for (frame, local), value in
-                     (protected_lookup or {}).items() if frame == t}
-        obs_dict = frame_observations(
-            observation_labels[t], raw[t], tracks, preferred, protected)
+        tracks = green_by_frame.get(t, {})
+        preferred = preferred_by_frame.get(t, {})
+        protected = protected_by_frame.get(t, {})
+        obs_dict = (prepared_observations[t]
+                    if prepared_observations is not None
+                    else frame_observations(
+                        observation_labels[t], raw[t], tracks, preferred,
+                        protected))
         observations = [obs_dict[key] for key in sorted(obs_dict)]
         active = [row for row in states.values()
                   if abs(t - row.t) <= max_gap + 1]
@@ -1176,37 +1260,38 @@ def track_from_anchor(observation_labels: np.ndarray, raw: np.ndarray, lag: np.n
                       anchor_t: int, params: dict,
                       observation_table: pd.DataFrame | None = None,
                       anchor_identity_map: dict[int, int] | None = None,
+                      prepared_observations: list[dict[int, dict]] | None = None,
                       ) -> tuple[np.ndarray, pd.DataFrame]:
-    green_lookup: dict[tuple[int, int], set[int]] = {}
-    preferred_lookup: dict[tuple[int, int], int] = {}
-    protected_lookup: dict[tuple[int, int], bool] = {}
-    if observation_table is not None and len(observation_table):
-        for row in observation_table.itertuples():
-            text = str(row.green_track_ids)
-            tracks = set() if text in ("", "nan") else {
-                int(value) for value in text.split(";") if value}
-            green_lookup[int(row.t), int(row.local_id)] = tracks
-            if hasattr(row, "preferred_identity") and not pd.isna(
-                    row.preferred_identity):
-                preferred_lookup[int(row.t), int(row.local_id)] = int(
-                    row.preferred_identity)
-            if (hasattr(row, "preferred_identity_protected")
-                    and not pd.isna(row.preferred_identity_protected)):
-                protected_lookup[int(row.t), int(row.local_id)] = bool(
-                    row.preferred_identity_protected)
+    params = dict(params)
+    params["_motion_reservation_identity_set"] = frozenset(
+        int(value) for value in params.get("motion_reservation_identities", []))
+    params["_high_confidence_identity_set"] = frozenset(
+        int(value) for value in params.get("high_confidence_identity_ids", []))
+    green_lookup, preferred_lookup, protected_lookup = _tracking_lookups(
+        observation_table)
+    if (prepared_observations is not None
+            and len(prepared_observations) != len(observation_labels)):
+        raise ValueError("prepared tracking observations have wrong frame count")
+    tracking_observations = (
+        None if prepared_observations is None
+        else _attach_tracking_metadata(
+            prepared_observations, green_lookup, preferred_lookup,
+            protected_lookup))
     anchor_states, anchor_labels, next_identity = _anchor_states(
         observation_labels, raw, anchor_t, green_lookup, anchor_identity_map,
-        preferred_lookup, protected_lookup)
+        preferred_lookup, protected_lookup,
+        None if tracking_observations is None
+        else tracking_observations[anchor_t])
     reserved_identity_ids = set(preferred_lookup.values()) | set(anchor_states)
     next_identity = max(next_identity, max(reserved_identity_ids, default=0) + 1)
     forward, forward_links, next_identity = track_direction(
         observation_labels, raw, lag, anchor_t, 1, anchor_states,
         next_identity, params, green_lookup, preferred_lookup,
-        protected_lookup, reserved_identity_ids)
+        protected_lookup, reserved_identity_ids, tracking_observations)
     backward, backward_links, next_identity = track_direction(
         observation_labels, raw, lag, anchor_t, -1, anchor_states,
         next_identity, params, green_lookup, preferred_lookup,
-        protected_lookup, reserved_identity_ids)
+        protected_lookup, reserved_identity_ids, tracking_observations)
     combined = forward | backward
     combined[anchor_t] = anchor_labels
     anchor_rows = [{

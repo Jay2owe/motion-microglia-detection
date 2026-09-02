@@ -191,6 +191,12 @@ def consolidate_host_conditioned_aliases(
         labels: np.ndarray, raw: np.ndarray, params: dict,
         ) -> tuple[np.ndarray, pd.DataFrame, pd.DataFrame]:
     fixed = labels.copy()
+    # Optional candidate guard. Once pixels have been renamed, do not let a later
+    # iteration reinterpret the same physical segment in the reverse direction. The
+    # default remains off so accepted production behaviour is unchanged until this
+    # general rule has passed review.
+    lock_renamed_domains = bool(params.get("lock_renamed_alias_domains", False))
+    renamed_domain = np.zeros(labels.shape, bool)
     decisions: list[dict] = []
     all_candidates: list[pd.DataFrame] = []
     for iteration in range(1, int(params["maximum_aliases"]) + 1):
@@ -222,8 +228,10 @@ def consolidate_host_conditioned_aliases(
         # considering other lost-cell claims; one conflict must not stop the entire
         # field-wide consolidation pass.
         safe = [row for row in eligible if not any(
-            np.any(fixed[t] == int(row["target_identity"]))
-            and np.any(fixed[t] == int(row["source_identity"]))
+            (np.any(fixed[t] == int(row["target_identity"]))
+             and np.any(fixed[t] == int(row["source_identity"])))
+            or (lock_renamed_domains and np.any(
+                renamed_domain[t] & (fixed[t] == int(row["source_identity"]))))
             for t in range(int(row["source_start_t"]),
                            int(row["source_end_t"]) + 1))]
         if not safe:
@@ -237,6 +245,8 @@ def consolidate_host_conditioned_aliases(
         for t in range(start_t, end_t + 1):
             mask = fixed[t] == source
             renamed += int(mask.sum())
+            if lock_renamed_domains:
+                renamed_domain[t] |= mask
             fixed[t][mask] = target
         decisions.append({
             "alias_id": f"AL{len(decisions) + 1:04d}",

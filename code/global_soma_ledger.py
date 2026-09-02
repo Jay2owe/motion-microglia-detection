@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,7 +11,7 @@ from scipy.optimize import linear_sum_assignment
 from model_review import eroded_cores, identity_components
 from persistence import green_evidence_for_fixed_objects
 from persistent_merges import _split_interval
-from tracking import track_from_anchor
+from tracking import frame_observations, track_from_anchor
 
 
 CONNECTIVITY = np.ones((3, 3), np.uint8)
@@ -250,83 +251,211 @@ def track_physical_somas(
         tracking_params: dict, observation_labels: np.ndarray,
         observation_table: pd.DataFrame,
         ledger_params: GlobalSomaLedgerParams = GlobalSomaLedgerParams(),
+        prepared_observations: list[dict[int, dict]] | None = None,
         ) -> tuple[np.ndarray, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    anchor_map, anchor_audit = resolve_anchor_identity_map(
-        physical_objects, accepted_labels, anchor_t, ledger_params)
-    evidence = physical_soma_tracking_evidence(
-        physical_objects, accepted_labels,
-        observation_labels, observation_table,
-        ledger_params.preferred_continuity_window_frames,
-        ledger_params.preferred_continuity_step_px,
-        ledger_params.minimum_preferred_support_frames)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        anchor_future = executor.submit(
+            resolve_anchor_identity_map,
+            physical_objects, accepted_labels, anchor_t, ledger_params)
+        evidence_future = executor.submit(
+            physical_soma_tracking_evidence,
+            physical_objects, accepted_labels,
+            observation_labels, observation_table,
+            ledger_params.preferred_continuity_window_frames,
+            ledger_params.preferred_continuity_step_px,
+            ledger_params.minimum_preferred_support_frames)
+        anchor_map, anchor_audit = anchor_future.result()
+        evidence = evidence_future.result()
     candidate, links = track_from_anchor(
         physical_objects, raw, lag, anchor_t, tracking_params,
-        evidence, anchor_map)
+        evidence, anchor_map, prepared_observations)
     if not np.array_equal(candidate > 0, physical_objects > 0):
         raise AssertionError("global soma tracking changed foreground support")
     return candidate, links, evidence, anchor_audit
 
 
-def add_three_cell_bookend_observations(
+def add_field_discovered_bookend_observations(
         physical_objects: np.ndarray, tracked_labels: np.ndarray,
-        raw: np.ndarray, lag: np.ndarray, gold_standard: pd.DataFrame,
-        merge_params: dict,
+        raw: np.ndarray, lag: np.ndarray, structural_objects: pd.DataFrame,
+        structural_runs: pd.DataFrame, merge_params: dict,
+        minimum_structural_score: float = 0.8,
         ) -> tuple[np.ndarray, pd.DataFrame]:
-    """Add the third soma slot in reviewer-confirmed three-cell interactions."""
+    """Add observations for structural pairs with temporary-merge bookends.
+
+    Full-field two-core runs nominate interactions, not cells. A run is actionable when
+    its two detected cores have distinct tracked names at the representative bookend,
+    then become one name, then separate again within the general bookend horizon. Every
+    run is accepted or refused with a reason.
+    """
+    if physical_objects.shape != tracked_labels.shape:
+        raise ValueError("physical objects and tracked labels differ in shape")
     result = physical_objects.copy()
-    rows: list[dict] = []
-    three_cell = gold_standard[gold_standard.true_cell_count == 3]
-    for case in three_cell.itertuples():
-        representative = int(case.representative_imagej_frame) - 1
+    audit_rows: list[dict] = []
+    accepted_keys: set[tuple[int, int, int, int]] = set()
+    event_number = 0
+    for run in structural_runs.itertuples(index=False):
+        base = {
+            "structural_run_id": str(run.run_id),
+            "representative_imagej_frame": int(
+                run.representative_imagej_frame),
+            "maximum_two_core_score": float(run.maximum_two_core_score),
+        }
+        if float(run.maximum_two_core_score) < float(minimum_structural_score):
+            audit_rows.append({
+                **base, "decision": "rejected_structural_score",
+                "reason": "full-field two-core evidence is below the general gate",
+            })
+            continue
+        source_rows = structural_objects[
+            structural_objects.object_id.astype(str).eq(
+                str(run.representative_object_id))]
+        if len(source_rows) != 1:
+            audit_rows.append({
+                **base, "decision": "rejected_missing_representative_object",
+                "reason": "structural run does not map to exactly one detected object",
+            })
+            continue
+        obj = source_rows.iloc[0]
+        representative = int(run.representative_imagej_frame) - 1
         identity_a = int(tracked_labels[
-            representative, int(round(case.first_core_y)),
-            int(round(case.first_core_x))])
+            representative, int(round(obj.first_core_y)),
+            int(round(obj.first_core_x))])
         identity_b = int(tracked_labels[
-            representative, int(round(case.second_core_y)),
-            int(round(case.second_core_x))])
+            representative, int(round(obj.second_core_y)),
+            int(round(obj.second_core_x))])
+        base.update({"identity_a": identity_a, "identity_b": identity_b})
         if identity_a <= 0 or identity_b <= 0 or identity_a == identity_b:
-            raise AssertionError(
-                f"review rank {int(case.review_rank)} lacks two tracked bookend names")
-        start_t = next((t for t in range(representative + 1, len(result))
-                        if not np.any(tracked_labels[t] == identity_a)
-                        and np.any(tracked_labels[t] == identity_b)), None)
+            audit_rows.append({
+                **base, "decision": "rejected_no_separated_identity_bookend",
+                "reason": "the detected cores do not carry two distinct tracked names",
+            })
+            continue
+        horizon = int(merge_params["maximum_bookend_frames"])
+        stop = min(len(result), representative + horizon + 1)
+        start_t = next((
+            t for t in range(representative + 1, stop)
+            if not np.any(tracked_labels[t] == identity_a)
+            and np.any(tracked_labels[t] == identity_b)), None)
         if start_t is None:
-            raise AssertionError(
-                f"review rank {int(case.review_rank)} has no merged interval")
-        future_t = next((t for t in range(start_t + 1, len(result))
-                         if np.any(tracked_labels[t] == identity_a)
-                         and np.any(tracked_labels[t] == identity_b)), None)
+            audit_rows.append({
+                **base, "decision": "rejected_no_temporary_merge",
+                "reason": "both tracked names remain separate through the horizon",
+            })
+            continue
+        future_stop = min(len(result), start_t + horizon + 1)
+        future_t = next((
+            t for t in range(start_t + 1, future_stop)
+            if np.any(tracked_labels[t] == identity_a)
+            and np.any(tracked_labels[t] == identity_b)), None)
         if future_t is None:
-            raise AssertionError(
-                f"review rank {int(case.review_rank)} has no separated bookend")
+            audit_rows.append({
+                **base, "start_t": start_t,
+                "decision": "rejected_no_separated_return_bookend",
+                "reason": "the vanished name does not return beside its host",
+            })
+            continue
+        previous = frame_observations(
+            tracked_labels[start_t - 1], raw[start_t - 1])
+        current = frame_observations(tracked_labels[start_t], raw[start_t])
+        history_start = max(
+            0, start_t - int(merge_params["minimum_pre_event_frames"]))
+        stable_history = all(
+            np.any(tracked_labels[t] == identity_a)
+            for t in range(history_start, start_t))
+        if (not stable_history or identity_a not in previous
+                or identity_b not in previous or identity_b not in current):
+            audit_rows.append({
+                **base, "start_t": start_t, "bookend_t": future_t,
+                "decision": "rejected_unstable_pre_merge_identity",
+                "reason": "the disappearing identity lacks stable pre-merge evidence",
+            })
+            continue
+        expanded = ndi.binary_dilation(current[identity_b]["mask"], iterations=2)
+        absorbed = float(np.mean(expanded[previous[identity_a]["mask"]]))
+        host_pixels = np.column_stack(np.nonzero(current[identity_b]["mask"]))
+        distance = float(np.min(np.linalg.norm(
+            host_pixels - previous[identity_a]["position"][None, :], axis=1)))
+        host_growth = current[identity_b]["area"] - previous[identity_b]["area"]
+        growth_fraction = host_growth / max(previous[identity_a]["area"], 1)
+        base.update({
+            "host_distance_px": distance,
+            "absorbed_fraction": absorbed,
+            "host_growth_fraction": growth_fraction,
+        })
+        if not (
+                distance <= float(merge_params["merge_reach_px"])
+                and absorbed >= float(merge_params["minimum_absorbed_fraction"])
+                and float(merge_params["minimum_host_growth_fraction"])
+                <= growth_fraction
+                <= float(merge_params["maximum_host_growth_fraction"])):
+            audit_rows.append({
+                **base, "start_t": start_t, "bookend_t": future_t,
+                "decision": "rejected_merge_geometry",
+                "reason": "absorption, distance, or host growth fails the general gate",
+            })
+            continue
+        key = (start_t, future_t, min(identity_a, identity_b),
+               max(identity_a, identity_b))
+        if key in accepted_keys:
+            audit_rows.append({
+                **base, "start_t": start_t, "bookend_t": future_t,
+                "decision": "rejected_duplicate_interaction",
+                "reason": "an earlier structural run already supplied this interaction",
+            })
+            continue
         partition = _split_interval(
             tracked_labels, raw, lag, start_t, future_t,
             identity_a, identity_b, merge_params)
         if partition is None:
-            raise AssertionError(
-                f"review rank {int(case.review_rank)} bookend partition refused")
+            audit_rows.append({
+                **base, "start_t": start_t, "bookend_t": future_t,
+                "decision": "rejected_partition_evidence",
+                "reason": "persistent-merge partition evidence was insufficient",
+            })
+            continue
         partitioned, frame_rows = partition
-        for t in range(start_t, future_t):
-            host = ((partitioned[t] == identity_a)
-                    | (partitioned[t] == identity_b))
-            source_objects = set(map(int, np.unique(result[t][host]))) - {0}
-            if len(source_objects) != 1:
-                raise AssertionError(
-                    f"review rank {int(case.review_rank)} host is not one object")
-            retained = source_objects.pop()
+        checks: list[tuple[int, np.ndarray, set[int]]] = []
+        for frame_row in frame_rows:
+            t = int(frame_row["t"])
+            pair_mask = ((partitioned[t] == identity_a)
+                         | (partitioned[t] == identity_b))
+            source_objects = set(map(
+                int, np.unique(result[t][pair_mask]))) - {0}
+            checks.append((t, pair_mask, source_objects))
+        applicable = bool(checks) and all(
+            len(source_objects) == 1
+            for _, _, source_objects in checks)
+        if not applicable:
+            audit_rows.append({
+                **base, "start_t": start_t, "bookend_t": future_t,
+                "decision": "rejected_already_separate_or_unmapped",
+                "reason": ("the partition does not map to one physical object "
+                           "in every interval frame"),
+                "physical_object_count": min(
+                    (len(row[2]) for row in checks), default=0),
+            })
+            continue
+        event_number += 1
+        event_id = f"SM{event_number:04d}"
+        accepted_keys.add(key)
+        for (t, pair_mask, source_objects), frame_row in zip(checks, frame_rows):
+            retained = next(iter(source_objects))
             new_object = int(result[t].max()) + 1
-            result[t][host] = 0
+            result[t][pair_mask] = 0
             result[t][partitioned[t] == identity_b] = retained
             result[t][partitioned[t] == identity_a] = new_object
-        for frame_row in frame_rows:
-            rows.append({
-                "review_rank": int(case.review_rank),
-                "identity_a": identity_a, "identity_b": identity_b,
+            audit_rows.append({
+                **base, "event_id": event_id,
+                "start_t": start_t, "bookend_t": future_t,
+                "decision": "accepted_single_physical_object",
+                "reason": ("two structural cores have separated identity bookends "
+                           "and share one physical object during the interval"),
+                "physical_object_count": 1,
                 **frame_row,
             })
     if not np.array_equal(result > 0, physical_objects > 0):
-        raise AssertionError("three-cell observation split changed foreground")
-    return result, pd.DataFrame(rows)
+        raise AssertionError("field-discovered observation split changed foreground")
+    return result, pd.DataFrame(audit_rows)
 
 
 def substantial_identity_conflicts(

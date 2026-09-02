@@ -183,18 +183,19 @@ def change_overlay(raw: np.ndarray, base: np.ndarray, candidate: np.ndarray,
     """The change made visible, on the same field as the other review panels.
 
     Required by `WORKFLOW_CONTRACT.md`. It is meant to sit beside the base and
-    candidate panels, not on its own: read across the three and the yellow tells
-    you which cell just gained ground and from whom.
+    candidate panels, not on its own. Every unchanged candidate outline is grey
+    and every differently named pixel is red. Numbers are intentionally absent
+    from this panel so the changed pixels remain unobscured.
 
-    Yellow is ground the candidate gave to a different name than the base did.
-    Blue is ground the base named and the candidate leaves unclaimed. The
-    candidate's own outlines stay, so a change can be read against the cell it
-    belongs to rather than floating in the dark.
+    The candidate's outlines stay, so a change can be read against the cell it
+    belongs to rather than floating in the dark. A red pixel may be an addition,
+    removal, or reassignment; the adjacent base and candidate panels show which.
     """
     changed = changed_pixels(base, candidate)
-    out = outline_overlay(raw, candidate, thick=thick)
-    out[changed & (candidate > 0)] = np.array([255, 210, 60], np.uint8)
-    out[changed & (candidate == 0) & (base > 0)] = np.array([80, 170, 255], np.uint8)
+    out = display_raw(raw)
+    edge = label_edges(candidate, thick=thick)
+    out[edge] = np.array([150, 150, 150], np.uint8)
+    out[changed] = np.array([255, 45, 45], np.uint8)
     return out
 
 

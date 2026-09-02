@@ -49,15 +49,42 @@ DEFAULTS = {
     "minimum_carve_px": 10,
     "minimum_host_area_px": 12,
     "carve_only_new_host_gain": False,
+    # Candidate workflows can isolate the two recovery domains without naming a cell
+    # or location. Defaults preserve historical behaviour.
+    "allow_new_foreground": True,
     # Established cell bodies remain open claims. Tiny or fleeting fragments are not
     # forced through the movie because they are below reliable soma evidence.
     "minimum_persistent_area_px": 30,
+    # Optional movie-relative form used by later tuning rounds. When supplied, the
+    # threshold is this fraction of the median identity's median observed area. The
+    # fixed-pixel setting above remains the default and therefore preserves every
+    # accepted run that predates this option.
+    "minimum_persistent_area_ratio_to_movie_median": None,
+    "minimum_persistent_area_floor_px": 4,
+    # A supplementary pass can be restricted to the identities excluded by an
+    # earlier fixed floor. The upper bound is exclusive and disabled by default.
+    "maximum_persistent_area_px_exclusive": None,
     "minimum_persistent_observations": 3,
+    # A first-ever tiny fragment must not permanently poison the descriptor. When
+    # enabled by an audited recovery arm, several consecutive mutually consistent
+    # substantial observations can establish a fresh descriptor and robust endpoint
+    # velocity. The default is off so existing pipeline behaviour remains unchanged.
+    "allow_descriptor_reestablishment": False,
+    "descriptor_reestablishment_observations": 3,
+    "descriptor_reestablishment_area_ratio": 1.6,
+    "descriptor_reestablishment_maximum_step_px": 14.0,
     "allow_field_exit": True,
     # Review attempts can first hard-fill only gaps bracketed by real observations.
     # End-of-track cells remain open claims in the audit without painting uncertain
     # outlines beyond their last evidence.
     "limit_to_observed_lifetime": False,
+    # Restrict recovery using the complete gap in the unmodified input labels. Using
+    # descriptor staleness here would reset after each inferred frame and could walk
+    # through an arbitrarily long interruption.
+    "maximum_original_gap_frames": None,
+    # A supplementary duration pass may start strictly beyond an earlier accepted
+    # ceiling. This prevents reapplying the earlier short-gap population.
+    "minimum_original_gap_frames": None,
     "forced_identity_ids": [],
     "forced_intervals": [],
     # How the likely area is scored.
@@ -102,19 +129,26 @@ class Descriptor:
         return float(np.median(self.means)) if self.means else 0.0
 
     def observe(self, t: int, mask: np.ndarray, raw_frame: np.ndarray,
-                memory: int, merged_area_ratio: float = 1.6) -> None:
-        yy, xx = np.nonzero(mask)
-        position = np.array([yy.mean(), xx.mean()], float)
+                memory: int, merged_area_ratio: float = 1.6,
+                position: np.ndarray | None = None,
+                area: int | None = None,
+                mean: float | None = None) -> None:
+        if position is None:
+            yy, xx = np.nonzero(mask)
+            position = np.array([yy.mean(), xx.mean()], float)
+        else:
+            position = np.asarray(position, float)
         steps = max(t - self.t, 1)
         if self.areas:
             step_velocity = (position - self.position) / steps
             self.velocity = 0.65 * step_velocity + 0.35 * self.velocity
         self.t, self.mask, self.position, self.stale = t, mask.copy(), position, 0
-        area = int(mask.sum())
+        area = int(mask.sum()) if area is None else int(area)
         if not self.areas or area <= merged_area_ratio * self.area:
             self.areas.append(area)
             del self.areas[:-memory]
-        self.means.append(float(raw_frame[mask].mean()))
+        self.means.append(
+            float(raw_frame[mask].mean()) if mean is None else float(mean))
         del self.means[:-memory]
 
 
@@ -251,8 +285,10 @@ def likely_area(state: Descriptor, t: int, raw: np.ndarray, lag: np.ndarray,
                 float(params["minimum_intensity"]))
     # The growth domain is deliberately wider than the bright core: a hard brightness
     # mask breaks a dim cell into islands the sculpt cannot cross.
+    blank = ((local_labels == 0)
+             & bool(params.get("allow_new_foreground", True)))
     free = (inside & (intensity >= float(params["minimum_intensity"]))
-            & ((local_labels == 0) | contested))
+            & (blank | contested))
     if not free.any():
         return None
 
@@ -411,6 +447,26 @@ def _maximum_identity_area(labels: np.ndarray, params: dict) -> float:
     return float(np.median(areas)) * float(params["maximum_identity_area_ratio"])
 
 
+def resolve_minimum_persistent_area(labels: np.ndarray, params: dict) -> float:
+    """Resolve the small-cell persistence floor without naming a cell or movie."""
+    ratio = params.get("minimum_persistent_area_ratio_to_movie_median")
+    if ratio is None:
+        return float(params["minimum_persistent_area_px"])
+    ratio = float(ratio)
+    if ratio <= 0:
+        raise ValueError(
+            "minimum_persistent_area_ratio_to_movie_median must be positive")
+    identity_medians = []
+    for identity, ts in _identity_frames(labels).items():
+        identity_medians.append(float(np.median([
+            int(np.count_nonzero(labels[t] == identity)) for t in ts])))
+    if not identity_medians:
+        return float(params["minimum_persistent_area_floor_px"])
+    typical = float(np.median(identity_medians))
+    return max(float(params["minimum_persistent_area_floor_px"]),
+               ratio * typical)
+
+
 def _settle_carves(mask: np.ndarray, frame_labels: np.ndarray, params: dict
                    ) -> tuple[np.ndarray, str]:
     """Keep only the carves a host can survive: it stays whole and above its floor.
@@ -458,6 +514,8 @@ def complete_presence(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
     settings.setdefault("_background_level", _background_level(labels, raw, settings))
     settings.setdefault("_maximum_identity_area",
                         _maximum_identity_area(labels, settings))
+    settings.setdefault("_minimum_persistent_area",
+                        resolve_minimum_persistent_area(labels, settings))
     frames = len(labels)
     output = labels.copy()
     recovered = np.zeros(labels.shape, bool)
@@ -467,6 +525,7 @@ def complete_presence(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
     memory = int(settings["descriptor_memory"])
     border_px = int(settings["border_px"])
     states: dict[int, Descriptor] = {}
+    reestablishment_buffers: dict[int, list[dict]] = {}
     rows: list[dict] = []
     forced_ids = {int(value) for value in settings.get(
         "forced_identity_ids", [])}
@@ -475,18 +534,112 @@ def complete_presence(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
         forced_intervals.setdefault(int(interval["identity"]), []).append(
             (int(interval["start_t"]), int(interval["end_t"])))
 
+    minimum_original_gap = settings.get("minimum_original_gap_frames")
+    maximum_original_gap = settings.get("maximum_original_gap_frames")
+    allowed_original_gap: dict[tuple[int, int], bool] = {}
+    if minimum_original_gap is not None or maximum_original_gap is not None:
+        minimum_original_gap = (1 if minimum_original_gap is None
+                                else int(minimum_original_gap))
+        maximum_original_gap = (frames if maximum_original_gap is None
+                                else int(maximum_original_gap))
+        if minimum_original_gap < 1 or maximum_original_gap < 1:
+            raise ValueError("original gap frame limits must be positive or null")
+        if minimum_original_gap > maximum_original_gap:
+            raise ValueError(
+                "minimum_original_gap_frames cannot exceed the maximum")
+        for identity, observed_frames in present.items():
+            observed_set = set(observed_frames)
+            first, last = observed_frames[0], observed_frames[-1]
+            missing = np.asarray(
+                [t not in observed_set for t in range(first, last + 1)], bool)
+            padded = np.concatenate(([False], missing, [False])).astype(np.int8)
+            starts = np.flatnonzero(np.diff(padded) == 1)
+            ends = np.flatnonzero(np.diff(padded) == -1) - 1
+            for start, end in zip(starts, ends):
+                length = int(end - start + 1)
+                accepted = minimum_original_gap <= length <= maximum_original_gap
+                for relative_t in range(int(start), int(end) + 1):
+                    allowed_original_gap[(identity, first + relative_t)] = accepted
+
     for t in range(frames):
-        observations = frame_observations(labels[t], raw[t])
+        # Presence uses mask, centroid, area, and intensity only. Tracking's
+        # covariance/perimeter descriptor is intentionally skipped here.
+        observations = frame_observations(
+            labels[t], raw[t], include_shape=False)
         for identity, observation in observations.items():
             state = states.get(identity)
             if state is None:
                 state = Descriptor(identity, t, observation["mask"].copy(),
                                    observation["position"].copy(), np.zeros(2, float))
                 states[identity] = state
-            state.observe(t, observation["mask"], raw[t], memory)
+            reestablished = False
+            observed_area = int(np.count_nonzero(observation["mask"]))
+            minimum_area = float(settings["_minimum_persistent_area"])
+            if (bool(settings.get("allow_descriptor_reestablishment", False))
+                    and (not forced_ids or identity in forced_ids)
+                    and (not forced_intervals
+                         or identity in forced_intervals)
+                    and state.areas and state.area < minimum_area
+                    and observed_area >= minimum_area):
+                buffer = reestablishment_buffers.setdefault(identity, [])
+                if buffer and int(buffer[-1]["t"]) != t - 1:
+                    buffer.clear()
+                buffer.append({
+                    "t": int(t), "mask": observation["mask"].copy(),
+                    "position": observation["position"].copy(),
+                    "area": observed_area,
+                    "mean": float(raw[t][observation["mask"]].mean()),
+                })
+                required = int(settings[
+                    "descriptor_reestablishment_observations"])
+                del buffer[:-required]
+                if len(buffer) == required:
+                    areas = np.asarray([item["area"] for item in buffer], float)
+                    positions = np.asarray(
+                        [item["position"] for item in buffer], float)
+                    steps = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+                    consistent_area = bool(
+                        float(areas.max() / max(areas.min(), 1.0))
+                        <= float(settings[
+                            "descriptor_reestablishment_area_ratio"]))
+                    consistent_motion = bool(
+                        not len(steps) or float(steps.max()) <= float(settings[
+                            "descriptor_reestablishment_maximum_step_px"]))
+                    if consistent_area and consistent_motion:
+                        first, last = buffer[0], buffer[-1]
+                        elapsed = max(int(last["t"]) - int(first["t"]), 1)
+                        velocity = ((last["position"] - first["position"])
+                                    / elapsed)
+                        state = Descriptor(
+                            identity, t, last["mask"].copy(),
+                            last["position"].copy(), velocity)
+                        state.areas = [int(item["area"]) for item in buffer]
+                        state.means = [float(item["mean"]) for item in buffer]
+                        states[identity] = state
+                        rows.append({
+                            "t": t, "imagej_frame": t + 1,
+                            "identity": identity,
+                            "outcome": "descriptor_reestablished",
+                            "reestablishment_observations": required,
+                            "expected_area_px": state.area,
+                            "expected_mean_intensity": state.mean,
+                            "endpoint_velocity_y": float(velocity[0]),
+                            "endpoint_velocity_x": float(velocity[1]),
+                        })
+                        reestablished = True
+                        buffer.clear()
+            elif observed_area < minimum_area:
+                reestablishment_buffers.pop(identity, None)
+            if not reestablished:
+                state.observe(
+                    t, observation["mask"], raw[t], memory,
+                    position=observation["position"],
+                    area=observation["area"], mean=observation["mean"])
 
         due = [state for identity, state in states.items()
                if births[identity] <= t and identity not in observations
+               and (minimum_original_gap is None and maximum_original_gap is None
+                    or allowed_original_gap.get((identity, t), False))
                and (not forced_ids or identity in forced_ids)
                and (not forced_intervals or any(
                     start <= t <= end
@@ -501,13 +654,27 @@ def complete_presence(labels: np.ndarray, raw: np.ndarray, lag: np.ndarray,
         proposals: list[tuple[float, int, np.ndarray, dict, dict]] = []
         for state in sorted(due, key=lambda row: row.identity):
             state.stale += 1
-            if (state.area < float(settings["minimum_persistent_area_px"])
+            if (state.area < float(settings["_minimum_persistent_area"])
                     or len(state.areas) < int(
                         settings["minimum_persistent_observations"])):
                 rows.append({
                     "t": t, "imagej_frame": t + 1,
                     "identity": state.identity,
                     "outcome": "small_or_unestablished_identity_not_forced",
+                    "gap_steps": t - state.t,
+                    "last_imagej_frame": state.t + 1,
+                    "expected_area_px": state.area,
+                    "expected_mean_intensity": state.mean,
+                })
+                continue
+            persistence_ceiling = settings.get(
+                "maximum_persistent_area_px_exclusive")
+            if (persistence_ceiling is not None
+                    and state.area >= float(persistence_ceiling)):
+                rows.append({
+                    "t": t, "imagej_frame": t + 1,
+                    "identity": state.identity,
+                    "outcome": "outside_supplementary_area_band",
                     "gap_steps": t - state.t,
                     "last_imagej_frame": state.t + 1,
                     "expected_area_px": state.area,

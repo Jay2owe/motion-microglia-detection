@@ -12,6 +12,16 @@ from persistent_merges import _split_interval
 from tracking import motion_support
 
 
+def _conflict_free_selection(
+        scores: np.ndarray, incidence: np.ndarray,
+        ) -> np.ndarray | None:
+    """Return the exact independent optimum without starting a MILP solver."""
+    values = np.asarray(scores, float)
+    if np.any(np.sum(incidence, axis=1) > 1.0) or np.any(values == 0.0):
+        return None
+    return np.flatnonzero(values > 0.0)
+
+
 def _ids(labels: np.ndarray) -> list[int]:
     return sorted(set(map(int, np.unique(labels))) - {0})
 
@@ -313,17 +323,23 @@ def optimise_lineage_graph(
     for column, row in enumerate(edges.itertuples()):
         incidence[identity_index[int(row.persistent_identity)], column] = 1.0
         incidence[identity_index[int(row.relay_identity)], column] = 1.0
-    solution = milp(
-        c=-edges.graph_score.to_numpy(float),
-        integrality=np.ones(len(edges), int),
-        bounds=Bounds(np.zeros(len(edges)), np.ones(len(edges))),
-        constraints=LinearConstraint(
-            csr_matrix(incidence),
-            np.full(len(identities), -np.inf), np.ones(len(identities))),
-        options={"time_limit": 30.0})
-    if not solution.success or solution.x is None:
-        raise RuntimeError(f"whole-movie lineage graph failed: {solution.message}")
-    chosen = edges[np.asarray(solution.x) > 0.5].copy()
+    direct = _conflict_free_selection(
+        edges.graph_score.to_numpy(float), incidence)
+    if direct is None:
+        solution = milp(
+            c=-edges.graph_score.to_numpy(float),
+            integrality=np.ones(len(edges), int),
+            bounds=Bounds(np.zeros(len(edges)), np.ones(len(edges))),
+            constraints=LinearConstraint(
+                csr_matrix(incidence),
+                np.full(len(identities), -np.inf), np.ones(len(identities))),
+            options={"time_limit": 30.0})
+        if not solution.success or solution.x is None:
+            raise RuntimeError(
+                f"whole-movie lineage graph failed: {solution.message}")
+        chosen = edges[np.asarray(solution.x) > 0.5].copy()
+    else:
+        chosen = edges.iloc[direct].copy()
     chosen["decision_id"] = [f"GO{index + 1:04d}"
                              for index in range(len(chosen))]
     chosen["method"] = "whole_movie_graph_optimisation"
@@ -463,17 +479,22 @@ def optimise_host_merge_graph(
     for column, row in enumerate(allowed.itertuples()):
         incidence[resource_index[(int(row.t), int(row.lost_identity))], column] = 1.0
         incidence[resource_index[(int(row.t), int(row.host_identity))], column] = 1.0
-    solution = milp(
-        c=-allowed.graph_score.to_numpy(float),
-        integrality=np.ones(len(allowed), int),
-        bounds=Bounds(np.zeros(len(allowed)), np.ones(len(allowed))),
-        constraints=LinearConstraint(
-            csr_matrix(incidence), np.full(len(resources), -np.inf),
-            np.ones(len(resources))),
-        options={"time_limit": 30.0})
-    if not solution.success or solution.x is None:
-        raise RuntimeError(f"host-merge graph failed: {solution.message}")
-    chosen = allowed[np.asarray(solution.x) > 0.5].copy()
+    direct = _conflict_free_selection(
+        allowed.graph_score.to_numpy(float), incidence)
+    if direct is None:
+        solution = milp(
+            c=-allowed.graph_score.to_numpy(float),
+            integrality=np.ones(len(allowed), int),
+            bounds=Bounds(np.zeros(len(allowed)), np.ones(len(allowed))),
+            constraints=LinearConstraint(
+                csr_matrix(incidence), np.full(len(resources), -np.inf),
+                np.ones(len(resources))),
+            options={"time_limit": 30.0})
+        if not solution.success or solution.x is None:
+            raise RuntimeError(f"host-merge graph failed: {solution.message}")
+        chosen = allowed[np.asarray(solution.x) > 0.5].copy()
+    else:
+        chosen = allowed.iloc[direct].copy()
     chosen["decision_id"] = [f"HP{index + 1:04d}"
                              for index in range(len(chosen))]
     chosen["method"] = "whole_movie_host_partition_graph"

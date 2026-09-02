@@ -60,6 +60,36 @@ def _motion_lobes(binary: np.ndarray, minimum_px: int
     return components, rows
 
 
+def _motion_pair_cost_arrays(
+        lost: list[MotionLobe], gained: list[MotionLobe], params: dict,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build all pair features with the scalar formula applied by array axes."""
+    old_positions = np.asarray([row.position for row in lost], float)
+    new_positions = np.asarray([row.position for row in gained], float)
+    distances = np.linalg.norm(
+        old_positions[:, None, :] - new_positions[None, :, :], axis=2)
+    old_areas = np.asarray([row.area for row in lost], float)
+    new_areas = np.asarray([row.area for row in gained], float)
+    area_changes = np.abs(np.log2(
+        (new_areas[None, :] + 1.0) / (old_areas[:, None] + 1.0)))
+    old_shapes = np.asarray([row.shape for row in lost], float)
+    new_shapes = np.asarray([row.shape for row in gained], float)
+    shape_changes = np.mean(np.abs(np.log2(
+        (new_shapes[None, :, :] + 1e-3)
+        / (old_shapes[:, None, :] + 1e-3))), axis=2)
+
+    maximum_distance = float(params["maximum_motion_pair_distance_px"])
+    maximum_area = float(params["maximum_motion_area_log2_change"])
+    values = (
+        float(params["motion_pair_distance_weight"])
+        * distances / max(maximum_distance, 1e-6)
+        + float(params["motion_pair_area_weight"]) * area_changes
+        + float(params["motion_pair_shape_weight"]) * shape_changes)
+    allowed = ((distances <= maximum_distance)
+               & (area_changes <= maximum_area))
+    return np.where(allowed, values, BIG), distances, area_changes, shape_changes
+
+
 def pair_blue_red_regions(lag_frame: np.ndarray, params: dict
                           ) -> tuple[np.ndarray, np.ndarray,
                                      dict[int, tuple[MotionLobe, dict]]]:
@@ -75,32 +105,8 @@ def pair_blue_red_regions(lag_frame: np.ndarray, params: dict
     if not lost or not gained:
         return lost_labels, gained_labels, {}
 
-    cost = np.full((len(lost), len(gained)), BIG, float)
-    features: dict[tuple[int, int], dict] = {}
-    maximum_distance = float(params["maximum_motion_pair_distance_px"])
-    maximum_area = float(params["maximum_motion_area_log2_change"])
-    for old_index, old in enumerate(lost):
-        for new_index, new in enumerate(gained):
-            distance = float(np.linalg.norm(old.position - new.position))
-            area_change = abs(float(np.log2(
-                (new.area + 1.0) / (old.area + 1.0))))
-            if distance > maximum_distance or area_change > maximum_area:
-                continue
-            shape_change = float(np.mean(np.abs(np.log2(
-                (new.shape + 1e-3) / (old.shape + 1e-3)))))
-            value = (
-                float(params["motion_pair_distance_weight"])
-                * distance / max(maximum_distance, 1e-6)
-                + float(params["motion_pair_area_weight"]) * area_change
-                + float(params["motion_pair_shape_weight"]) * shape_change
-            )
-            cost[old_index, new_index] = value
-            features[old_index, new_index] = {
-                "pair_distance_px": distance,
-                "pair_area_log2_change": area_change,
-                "pair_shape_change": shape_change,
-                "pair_cost": value,
-            }
+    cost, distances, area_changes, shape_changes = _motion_pair_cost_arrays(
+        lost, gained, params)
 
     old_rows, new_rows = linear_sum_assignment(cost)
     result: dict[int, tuple[MotionLobe, dict]] = {}
@@ -109,8 +115,15 @@ def pair_blue_red_regions(lag_frame: np.ndarray, params: dict
         value = cost[old_index, new_index]
         if value >= BIG or value > maximum_cost:
             continue
+        features = {
+            "pair_distance_px": float(distances[old_index, new_index]),
+            "pair_area_log2_change": float(
+                area_changes[old_index, new_index]),
+            "pair_shape_change": float(shape_changes[old_index, new_index]),
+            "pair_cost": float(value),
+        }
         result[lost[old_index].component] = (
-            gained[new_index], features[old_index, new_index])
+            gained[new_index], features)
     return lost_labels, gained_labels, result
 
 
@@ -521,6 +534,64 @@ def seed_first_handoff_identities(
     if not np.array_equal(fixed > 0, labels > 0):
         raise AssertionError("handoff identity seeding changed foreground support")
     return fixed, pd.DataFrame(rows)
+
+
+def build_motion_reservation_requests(
+        seeded_labels: np.ndarray, seed_events: pd.DataFrame,
+        ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build zero or more host-carry requests from field-discovered seed events.
+
+    Each seed describes an established identity temporarily travelling under another
+    name. The established name becomes reservable when that temporary alias is no
+    longer present. Seeds whose alias never ends are rejected with an audit reason;
+    they do not abort unrelated reservations.
+    """
+    request_columns = [
+        "event_id", "kind", "identity", "displaced_identity", "to_t"]
+    audit_columns = [
+        "event_id", "identity", "displaced_identity", "start_search_t",
+        "to_t", "decision", "reason"]
+    if seed_events.empty:
+        return (pd.DataFrame(columns=request_columns),
+                pd.DataFrame(columns=audit_columns))
+
+    required = {"event_id", "t", "persistent_identity", "displaced_identity"}
+    missing = required - set(seed_events.columns)
+    if missing:
+        raise ValueError(f"motion seed events missing columns: {sorted(missing)}")
+
+    requests: list[dict] = []
+    audit: list[dict] = []
+    ordered = seed_events.sort_values(["t", "event_id"], kind="stable")
+    for seed in ordered.itertuples(index=False):
+        target = int(seed.persistent_identity)
+        alias = int(seed.displaced_identity)
+        start_t = int(seed.t) + 1
+        while (start_t < len(seeded_labels)
+               and np.any(seeded_labels[start_t] == alias)):
+            start_t += 1
+        common = {
+            "event_id": str(seed.event_id),
+            "identity": target,
+            "displaced_identity": alias,
+            "start_search_t": int(seed.t) + 1,
+            "to_t": start_t if start_t < len(seeded_labels) else pd.NA,
+        }
+        if start_t >= len(seeded_labels):
+            audit.append({**common, "decision": "rejected",
+                          "reason": "displaced_identity_never_ended"})
+            continue
+        requests.append({
+            "event_id": str(seed.event_id),
+            "kind": "motion_alias_ended_target_reserved",
+            "identity": target,
+            "displaced_identity": alias,
+            "to_t": start_t,
+        })
+        audit.append({**common, "decision": "accepted",
+                      "reason": "displaced_identity_ended"})
+    return (pd.DataFrame(requests, columns=request_columns),
+            pd.DataFrame(audit, columns=audit_columns))
 
 
 def carry_established_identities_along_motion(

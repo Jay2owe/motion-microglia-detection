@@ -31,18 +31,39 @@ class TransferParams:
 
 def identity_components(frame: np.ndarray, identity: int
                         ) -> list[tuple[int, np.ndarray]]:
-    components, count = ndi.label(frame == identity, structure=CONNECTIVITY)
-    return [(number, components == number) for number in range(1, count + 1)]
+    target = frame == identity
+    yy, xx = np.nonzero(target)
+    if not len(yy):
+        return []
+    y0, y1 = int(yy.min()), int(yy.max()) + 1
+    x0, x1 = int(xx.min()), int(xx.max()) + 1
+    components, count = ndi.label(
+        target[y0:y1, x0:x1], structure=CONNECTIVITY)
+    result: list[tuple[int, np.ndarray]] = []
+    for number in range(1, count + 1):
+        component = np.zeros(frame.shape, bool)
+        component[y0:y1, x0:x1] = components == number
+        result.append((number, component))
+    return result
 
 
 def eroded_cores(mask: np.ndarray, iterations: int = 1
                  ) -> list[tuple[int, np.ndarray]]:
+    yy, xx = np.nonzero(mask)
+    if not len(yy):
+        return []
+    y0, y1 = int(yy.min()), int(yy.max()) + 1
+    x0, x1 = int(xx.min()), int(xx.max()) + 1
     eroded = ndi.binary_erosion(
-        mask, structure=CONNECTIVITY, iterations=iterations)
+        mask[y0:y1, x0:x1], structure=CONNECTIVITY,
+        iterations=iterations)
     components, count = ndi.label(eroded, structure=CONNECTIVITY)
-    cores = [(int(np.count_nonzero(components == number)),
-              components == number)
-             for number in range(1, count + 1)]
+    cores: list[tuple[int, np.ndarray]] = []
+    for number in range(1, count + 1):
+        local = components == number
+        core = np.zeros(mask.shape, bool)
+        core[y0:y1, x0:x1] = local
+        cores.append((int(np.count_nonzero(local)), core))
     return sorted(cores, key=lambda row: row[0], reverse=True)
 
 
