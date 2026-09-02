@@ -1,0 +1,405 @@
+{
+  "_comment": "Copy to the ignored local file analysis_config.json and fill in. This file configures downstream measurement only; it never re-runs tracking. Paths are relative to this file unless absolute.",
+  "dataset": "YOUR_DATASET",
+  "frame_interval_min": 30,
+  "_comment_scale": "Leave microns_per_pixel null to report everything in pixels. Set it and every spatial column gains a calibrated twin (area_um2, perimeter_um, ...). calibration_tiffs are searched for resolution tags only when microns_per_pixel is null; ImageJ stacks usually carry none, in which case the run stays in pixels and says so.",
+  "microns_per_pixel": null,
+  "calibration_tiffs": [],
+  "_comment_output": "Each run writes outputs/<run>/<stem>/ with three folders. tables/ is what this package measured: cell_frame.csv (one row per cell per frame), cell_summary.csv (one row per cell), frame_summary.csv (one row per frame), and one file per module table that is not folded into one of those three. tracker/ holds the tracking run's own decision tables, copied through unaltered - this package never edits them and never paraphrases them. stacks/ holds the per-pixel images a module measured. Numbers are written to nine significant figures - enough that a figure re-deriving a z-score or a surrogate band from the file moves by less than one part in ten million - and the exponent is kept, so a p-value near zero survives. Every table's entry in manifest.json carries its grain (one row per what), its origin (measured or tracker) and its folder, so a run folder describes its own shape. A run folder is written once and refuses to overwrite itself: change something, choose a new run name.",
+  "output_root": "outputs",
+  "verify_hashes": true,
+  "_comment_theme": "How every figure looks. Omit the block entirely for the default. Presets: house (default), talk, print, colourblind, mono. Preview one before running with: python -m analysis theme --preset talk --preview swatch.svg. Roles are named by what they mean, not by colour, so recolouring a concept moves it in every figure at once; see python -m analysis theme for the full list. legend_location defaults to above (a single row just above the axes) and also accepts above left, above right, below, right, inside or auto. hours_per_tick is the spacing of ticks on any axis measured in hours; it must be a factor or a multiple of 24 (1, 2, 3, 4, 6, 8, 12, 24, 48, 72) so that every tick falls at the same time of day, and it defaults to 24. One build only: --hour-ticks 12.",
+  "theme": {
+    "preset": "house",
+    "roles": {},
+    "palette": {},
+    "type_scale": 1.0,
+    "stroke_scale": 1.0,
+    "legend_location": "above",
+    "hours_per_tick": 24
+  },
+  "_comment_conditions": "Experimental groups. The short form is a name and a regular expression searched in each movie's stem: {\"treated\": \"_A\\\\d\", \"control\": \"_B\\\\d\"}. Matching is case-insensitive. Two patterns matching one stem is an error rather than a race, and a stem no pattern matches stops the run - a movie in the wrong group is the one mistake no figure will reveal. Check before running with: python -m analysis conditions --config analysis_config.json. Omit the block entirely if the experiment has no groups. Use the long form below to add labels, colours, a control group, or a second crossed factor. If the groups are invented to test the pipeline, wrap them as {\"synthetic\": true, \"conditions\": [...]} so the run folder, the manifest and any comparison figure all say so - see analysis_config.demo.json.",
+  "conditions": [
+    {
+      "name": "treated",
+      "label": "+HCQ",
+      "match": "_A\\d",
+      "colour": "red",
+      "notes": "which wells or animals this covers"
+    },
+    {
+      "name": "control",
+      "label": "Vehicle",
+      "match": "_B\\d",
+      "colour": "blue",
+      "control": true
+    }
+  ],
+  "_comment_figures": "Wording per figure, keyed by the figure's slug (the folder name under figures/). The package never writes a conclusion: every builder's default title describes its axes, and anything interpretive is yours. Slots: title, subtitle, footnote, note, claim. Omit a slot to keep the builder's default, which describes the axes; set it to \"\" to take that text off the figure altogether. A title starts with a capital wherever it came from - one character is raised, and a first word with its own capitals (pH, mCherry, CD68) is left as typed; subtitles, footnotes and notes are never re-cased. claim has no default and is what goes in the bundle README and the figure register. A one-off override without editing this file: python analysis\\figures\\03_surveillance_not_translocation.py outputs\\<run> --title \"...\"",
+  "_comment_figure_options": "Beside the wording, an options block holds what the figure DRAWS - the same settings as its command-line flags, spelled with underscores, and resolved the same three ways: a flag on this build beats what the run recorded, which beats the builder's default. This is the route that survives a rebuild; a figure tuned with six flags and never written down cannot be redrawn from the run folder. Which options a figure accepts is its own declaration: python -m analysis figures --slug <slug>. Values are typed JSON, so 45 is a number and [\"a\", \"b\"] is a list; a comma-separated string means the same as the list. null means 'use the builder's default', which is not the same as \"\". A name the figure does not accept is refused by python -m analysis doctor, naming the ones it does.",
+  "figures": {
+    "surveillance-not-translocation": {
+      "title": "Microglia rebuild themselves without going anywhere",
+      "footnote": "",
+      "note": "",
+      "claim": "The median cell moves 0.72 px per 30 min while replacing 18% of its own pixels."
+    },
+    "step-size-distribution": {
+      "claim": "Half of all steps are under 0.31 px; the 95th percentile is 2.4 px.",
+      "options": {
+        "metrics": "soma_step_px_gapless",
+        "bins": 60
+      }
+    }
+  },
+  "_comment_windows": "Named stretches of the recording, so a change partway through is not averaged away. Each one is summarised separately into cell_summary_windowed.csv and frame_summary_windowed.csv - one row per cell per window, so a new window adds rows and never columns. Declare in hours since the recording began, or in frames, never both; hours are a position in the movie and not a time of day, because this package holds no recording start time. Windows are half-open (from <= h < to), so two that share an edge do not both claim the frame on it - if they did, every paired difference would be computed against a baseline holding the first frame of the response. Windows may overlap and need not cover everything; a frame in no window contributes to no windowed summary. Set `baseline` to another window's name and window_change.csv carries this window's value against that one, per cell per metric, as a difference and as a ratio - both, because a change of 40 camera units means nothing without knowing whether the baseline was 50 or 5000. Declaring no windows writes no windowed files and changes nothing. A movie may carry its own `windows` block, which replaces this one for that movie rather than adding to it.",
+  "windows": [
+    {
+      "name": "baseline",
+      "from_hours": 0.0,
+      "to_hours": 20.0,
+      "description": "before the drug went in"
+    },
+    {
+      "name": "treatment",
+      "from_hours": 20.0,
+      "to_hours": 49.0,
+      "baseline": "baseline",
+      "description": "after the drug went in"
+    }
+  ],
+  "_comment_contrasts": "What to compare, named explicitly. There is deliberately no way to test every metric at once: the package declares hundreds of columns, and a correction applied across a thousand tests nobody meant to run destroys the power to find the twenty that were the point. Each contrast names the pooled table, the metrics, the column to group by, the groups, the test, and - with no default anywhere - the unit of replication. `unit` is the setting that decides the answer: eighty-three cells from one movie are not eighty-three independent samples, so `cell` is only defensible when cells come from many movies and the movie effect is what is being tested; `movie` and `subject` reduce each movie's or each animal's cells to one value first, and then need `aggregate` (median or mean), because that choice changes the answer too. Tests offered: mannwhitney and kruskal for ranks, welch_t and anova for means, wilcoxon and paired_t for a window against its own baseline in the same cells. Which test runs is declared and never chosen from the data - running a normality test and picking accordingly is a garden of forking paths with a friendly face. The correction is applied within `family` and never across families, so put the results you meant to look at together in one family and a broad sweep in another; every contrast in a family must agree about `correction` and `alpha`. Set `window` to test inside one declared window. Results go to statistics.csv, one row per result, including the rows that could not be tested - too few units, a group that is not there, a metric one movie never measured - each written with its reason in `note`. Declaring no contrasts writes no statistics.csv.",
+  "contrasts": [
+    {
+      "name": "reporter_by_condition",
+      "description": "Does the reporter differ between the groups?",
+      "family": "primary",
+      "table": "cell_summary",
+      "metrics": [
+        "corrected_mean_median",
+        "area_px_median",
+        "turnover_index_median"
+      ],
+      "group_by": "condition",
+      "groups": [
+        "control",
+        "treated"
+      ],
+      "unit": "subject",
+      "aggregate": "median",
+      "test": "mannwhitney",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
+    },
+    {
+      "name": "response_against_own_baseline",
+      "description": "Within each cell, does the treatment window differ from the baseline window? A cell is its own control, so this is a paired test.",
+      "family": "primary",
+      "table": "cell_summary_windowed",
+      "metrics": [
+        "turnover_index_median"
+      ],
+      "group_by": "window",
+      "groups": [
+        "treatment",
+        "baseline"
+      ],
+      "unit": "cell",
+      "test": "wilcoxon",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
+    }
+  ],
+  "enabled_modules": [
+    "morphology",
+    "intensity",
+    "channels",
+    "objects",
+    "object_geometry",
+    "motility",
+    "surveillance",
+    "motion_evidence",
+    "presence",
+    "territory",
+    "sholl",
+    "contacts",
+    "regimes",
+    "recurrence",
+    "sequence_distance",
+    "coupling",
+    "rhythms",
+    "neighbours",
+    "territory_shape",
+    "walk",
+    "provenance",
+    "history"
+  ],
+  "movies": [
+    {
+      "stem": "YOUR_STEM",
+      "_comment_condition": "Leave condition out to derive it from the stem using the patterns above; set it to override the derivation for one awkward file. subject is the animal, dish or slice - two movies from one subject are not two independent observations, and it defaults to the stem so they stay separate unless you say otherwise.",
+      "condition": null,
+      "subject": null,
+      "notes": "which accepted baseline these outlines are, and when it was approved",
+      "_comment_offset": "source_frame_offset is how many leading frames of the raw stack the outlines do not cover. Label frame k is raw frame k + offset. Set 0 when they start together.",
+      "source_frame_offset": 0,
+      "labels": "path/to/accepted/out/YOUR_STEM.tif",
+      "unclaimed": "path/to/accepted/out/YOUR_STEM_unclaimed_original_ids.tif",
+      "raw": "path/to/registered_inputs/out/YOUR_STEM.tif",
+      "evidence": "path/to/motion_inputs/qc/YOUR_STEM_motion_evidence.tif",
+      "_comment_provenance": "Both optional, and a movie without them is measured exactly as before - it simply cannot say how much of what it measured rests on a reconstructed attribution. provenance is the per-pixel sidecar written beside the accepted labels: bit 0 marks a pixel whose owning identity the tracker decided by reconstruction rather than by seeing that cell there, bit 1 marks foreground never resolved, and bit 2 marks the far rarer case of an outline pixel the segmentation never saw at all. Bit 0 without bit 2 is a real pixel with an inferred name; bit 0 with bit 2 is a pixel the tracker supplied. On the reference movies the second is under 0.2% of the first, which is why the distinction is worth keeping rather than reading every flag as an invented pixel. It is in label frame space, so it needs no source_frame_offset. history is the tracker's decision folder, holding why a name went missing, was hidden inside another or was renamed; exactly one module reads it and nothing is ever written back into it.",
+      "provenance": "path/to/accepted/out/YOUR_STEM_provenance.tif",
+      "history": "path/to/accepted/run/mid/accepted_history",
+      "_comment_channels": "Extra imaging channels, measured through the same outlines by the `channels` module. Omit the block entirely when there is only one signal stack; a movie with no channels skips the module rather than failing. Everything except name and path is a way of saying THIS FILE IS NOT ALREADY IN THE SAME SPACE AS THE LABELS, and they are separate settings because they are separate mistakes: a wrong channel_index measures the wrong dye, a wrong frame_offset measures the right dye at the wrong time, and a wrong crop_origin measures the right dye somewhere else in the dish. The whole alignment is one line, and it is worth reading twice: analysed[i, y, x] == source[frame_offset + i, crop_origin[0] + y - shift_y[i], crop_origin[1] + x - shift_x[i]]. name becomes a value in the `channel` column of three tables and a series label on any figure, so it must be lower case, start with a letter and hold only letters, digits and underscores; it may not reuse a name this package already loads (labels, raw, unclaimed, evidence, provenance, history). channel_index picks the plane of a multi-channel file: required when the file has a channel axis, refused when it does not, and with no default because the wrong guess measures the wrong dye and says nothing. frame_offset defaults to the movie's source_frame_offset, which is right whenever the channel came from the same acquisition as the raw stack. crop_origin is [y, x] of the analysed field inside this file, and is [0, 0] when the channel is already cropped to the same field as the labels. shifts is a CSV with one row per source frame, read from the two columns named in shift_columns (the y one first) and multiplied by shift_scale before rounding to whole pixels; a registration log that records the drift it MEASURED rather than the correction it APPLIED is the common case and is turned into the latter with shift_scale -1. Pixels the alignment cannot reach are left blank rather than wrapped round from the far edge, and channel_px / channel_missing_px in channels.csv say how much of each cell was actually there to measure. description is yours: the package never guesses what a channel stains, and whatever is written here travels into the manifest untouched. sha256 pins the file the same way the stacks above are pinned.",
+      "channels": [
+        {
+          "name": "green",
+          "description": "WHAT THIS CHANNEL IS - the package never guesses",
+          "path": "path/to/YOUR_STEM_two_channel_timestack.tif",
+          "channel_index": 0,
+          "frame_offset": null,
+          "crop_origin": [
+            0,
+            0
+          ],
+          "shifts": null,
+          "shift_columns": [
+            "cum_dy",
+            "cum_dx"
+          ],
+          "shift_scale": -1,
+          "sha256": null
+        }
+      ],
+      "_comment_valid_mask": "Optional. A boolean or 0/1 TIFF saying where measuring can be trusted: either a single (y, x) frame applied to every label frame, or a full (frames, y, x) stack used frame by frame. Non-zero means valid. IT IS IN LABEL SPACE, like unclaimed and provenance and unlike raw and evidence - it describes the analysed field rather than the acquisition, so no source_frame_offset is applied to it, and supplying one written in source space shifts it and produces a complete, confident, wrong answer. It exists because several numbers divide by the size of the imaged field and the field is not all measurable: registration leaves a margin blank in some frames, vignetting darkens the corners, and a partial field may be imaged at all. Exactly four things change when it is declared - neighbour_ground_px (and so nearest_neighbour_expected_px and nearest_neighbour_index), local_density with its own area column, object_cover_within_radius, and object_field_share - plus valid_px and valid_share in frame_summary.csv, which are written whether or not a mask exists. territory is deliberately unaffected: every share it writes divides by a cell's own footprint rather than by a field. THE MASK NEVER DROPS A ROW: whether a cell that spends half its life in a vignetted corner should be excluded is a scientific decision and this package does not make those. It does not rescale intensities either; a flat-field correction is a different job. Omit it and every number is exactly what it was before this setting existed. A mask that marks nothing measurable is refused at load rather than left to divide by zero.",
+      "valid_mask": null,
+      "_comment_objects": "Sets of labelled reference shapes - blood vessels, plaques, a wound edge, a scaffold, a second cell type - measured by the `objects` module and related to each cell by `object_geometry`. Omit the block entirely when there are none; a movie with no object set skips both modules rather than failing. The alignment vocabulary is deliberately identical to the `channels` block above, down to the setting names, so lining this up is the thing you already know how to do: analysed[i, y, x] == source[frame_offset + i, crop_origin[0] + y - shift_y[i], crop_origin[1] + x - shift_x[i]]. THE FILE MUST BE A LABEL IMAGE: 0 means no object, and every other value is an object's number. name becomes a value in the `object_set` column and a series label on any figure, so it must be lower case, start with a letter and hold only letters, digits and underscores. static is the one setting `channels` does not have: set it when the file holds a single map that applies to every frame - a vessel tree drawn once - and it is then held fixed rather than drifting with the registration, because such a map is drawn in the analysed field's own space; frame_offset and shifts are refused alongside it rather than ignored. A pixel the alignment cannot reach reads as empty ground, because a label image has no spare value meaning `could not look`, and the count is recorded in manifest.json under objects:<name> as unreachable_px instead. THIS PACKAGE DOES NOT TRACK OBJECTS: an object's number is whatever your file says it is, frame by frame, and object_frames_present in objects.csv is the column that shows you whether that numbering is stable. description is yours: the package never guesses what a shape is, and never measures anything that would depend on knowing.",
+      "objects": [
+        {
+          "name": "vessels",
+          "description": "WHAT THESE SHAPES ARE - the package never guesses",
+          "path": "path/to/YOUR_STEM_vessels.tif",
+          "static": false,
+          "channel_index": null,
+          "frame_offset": null,
+          "crop_origin": [
+            0,
+            0
+          ],
+          "shifts": null,
+          "shift_columns": [
+            "cum_dy",
+            "cum_dx"
+          ],
+          "shift_scale": -1,
+          "sha256": null
+        }
+      ],
+      "_comment_side_tables": "Tables of your own, keyed on a timepoint or on a cell and joined onto the tables that share that key. Omit the block entirely when there is nothing to attach. THE FILE IS JOINED, NEVER COPIED: it stays where you put it, it is fingerprinted, and manifest.json records under side:<name> what was read and what matched. name becomes the prefix on every column this table contributes, so it must be lower case, start with a letter and hold only letters, digits and underscores. keyed_on is frame_index (one row per timepoint, reaching frame_summary and every row of cell_frame) or identity (one row per cell, reaching cell_summary and every row of that cell); nothing else, because a third key would need a roll-up this package does not have. key_column is what the key is called in YOUR file and defaults to the value of keyed_on. key_space is the setting to get right and applies to frame keys only: label (the default) means the key is already a 0-based index into the analysed movie, source means it is a 1-based ImageJ frame number in the acquisition and is converted with frame_index = key - 1 - source_frame_offset. Getting that wrong shifts every row by two frames on this dataset and produces a complete, plausible, wrong table; it is refused outright on an identity key rather than ignored. columns is an allow-list so two columns of a fifty-column log can be attached without the other forty-eight, or null for every column but the key. A repeated key is refused before the join, because a merge on a repeated key multiplies rows instead of failing. Every column is prefixed with the table's own name and a prefixed name that collides with something this package writes is refused. Coverage is reported and never enforced - keys_matched, keys_unmatched and movie_rows_covered in the manifest are the only thing separating a log that covers 90 of 99 frames from one that covers none. Rows the table does not cover keep their measurements and get a blank. Nothing in the package derives anything from these columns: they are your words, and what to do with them is yours.",
+      "side_tables": [
+        {
+          "name": "acquisition",
+          "description": "WHAT THIS TABLE HOLDS - the package never guesses",
+          "path": "path/to/YOUR_STEM_acquisition_log.csv",
+          "keyed_on": "frame_index",
+          "key_column": "frame",
+          "key_space": "source",
+          "columns": null,
+          "sha256": null
+        },
+        {
+          "name": "genotype",
+          "description": "per-cell call made by hand from the marker channel",
+          "path": "path/to/YOUR_STEM_cell_calls.csv",
+          "keyed_on": "identity",
+          "key_column": "identity",
+          "columns": [
+            "call",
+            "confidence"
+          ],
+          "sha256": null
+        }
+      ],
+      "_comment_sha256": "Optional but recommended. Any pinned input whose fingerprint changes stops the run rather than silently producing different numbers. Compute with: (Get-FileHash .\\file.tif -Algorithm SHA256).Hash.ToLower()",
+      "sha256": {
+        "labels": "<replace-with-sha256>",
+        "raw": "<replace-with-sha256>",
+        "provenance": "<replace-with-sha256>",
+        "valid_mask": "<replace-with-sha256>"
+      }
+    }
+  ],
+  "modules": {
+    "morphology": {
+      "compute_skeleton": true,
+      "min_area_px_for_skeleton": 12,
+      "min_area_px_for_shape_ratios": 8,
+      "max_plausible_circularity": 1.15
+    },
+    "intensity": {
+      "background_ring_inner_px": 4,
+      "background_ring_outer_px": 12,
+      "min_background_px": 25,
+      "bright_threshold_multiplier": 2.0
+    },
+    "channels": {
+      "background_ring_inner_px": 4,
+      "background_ring_outer_px": 12,
+      "min_background_px": 25,
+      "bright_threshold_multiplier": 2.0
+    },
+    "_comment_object_geometry": "dilation_px is how close counts as touching, and it is the same name and the same default `contacts` uses for cell-to-cell adjacency. It is a judgement rather than a constant - on a dataset where the median cell is about 11 px across, every pixel of dilation is a tenth of a cell - and it rides on every row of cell_objects.csv so that two tables built at different tolerances cannot be mistaken for one. radius_reach_multiple sets the neighbourhood radius as a multiple of the cells' own reach, because a pixel constant tuned at one magnification is wrong at the next; radius_px overrides it outright. The neighbourhood cover divides by how much of the imaged field lies within that radius, so a cell at the edge is not credited with ground outside the picture.",
+    "object_geometry": {
+      "dilation_px": 2,
+      "radius_reach_multiple": 4.0,
+      "radius_px": null
+    },
+    "motility": {
+      "max_msd_lag_frames": 24,
+      "min_frames_for_track_stats": 5
+    },
+    "surveillance": {
+      "max_gap_frames_for_turnover": 1
+    },
+    "_comment_motion_evidence": "channel_names names the planes of the evidence stack in order. Every channel is both counted (evidence_<name>_px) and totalled (evidence_<name>_sum, as a share of full scale), because a count answers how many pixels changed and a total answers how much signal changed, and the two come apart exactly where it matters - a bright process sweeping a few pixels against a dim smear over many. trail_channel names the one channel that encodes HOW LONG AGO a pixel was last disturbed as brightness, brightest being freshest, and trail_levels is how many steps that ramp has. Leave trail_levels null to read it off the stack, which works whenever the ramp is evenly spaced and short; set a number when the inference declines, and the age columns stay blank rather than being filled from a guess about somebody else's encoder. Set trail_channel to null for a tracker that writes no trail.",
+    "motion_evidence": {
+      "channel_names": [
+        "base",
+        "lost",
+        "held",
+        "gained",
+        "trail"
+      ],
+      "trail_channel": "trail",
+      "trail_levels": null
+    },
+    "territory": {
+      "core_fraction": 0.8,
+      "transient_fraction": 0.2,
+      "count_unclaimed_as_visited": true,
+      "min_union_px_for_shape": 8,
+      "max_plausible_circularity": 1.15
+    },
+    "neighbours": {
+      "_comment": "radius_px overrides radius_reach_multiple outright; leave it null so the neighbourhood scales with the cells rather than with a constant tuned on one magnification. density_ground is 'ever_occupied' (every pixel any cell ever held) or 'field' (the whole imaged frame); the two differ 4.4x on the reference movie, and local_density_area_px carries whichever was used on every row.",
+      "radius_reach_multiple": 4.0,
+      "radius_px": null,
+      "neighbour_k": 6,
+      "density_ground": "ever_occupied"
+    },
+    "walk": {
+      "_comment": "min_step_px is the noise floor: below it a step has no readable direction, and it also defines 'stationary'. It decides how much of the movie survives - on the reference movie 32% of steps are under 0.5 px and 60% under 1 px - so it is the parameter to think about before quoting any turning number.",
+      "centre": "soma",
+      "min_step_px": 0.5,
+      "run_turn_threshold_deg": 90.0,
+      "max_autocorrelation_lag_frames": 24,
+      "min_turns_for_summary": 5
+    },
+    "sholl": {
+      "n_rings": 6,
+      "ring_width": null,
+      "centre": "soma",
+      "exclude_other_identities": true
+    },
+    "contacts": {
+      "dilation_px": [
+        1,
+        2
+      ],
+      "min_shared_boundary_px": 1,
+      "include_unclaimed": false
+    },
+    "regimes": {
+      "feature_columns": [
+        "area_px",
+        "circularity",
+        "solidity",
+        "ramification_index",
+        "aspect_ratio",
+        "skeleton_branches",
+        "turnover_index",
+        "step_px_gapless",
+        "punctateness"
+      ],
+      "n_regimes": 4,
+      "standardise": true,
+      "random_state": 20260825,
+      "min_frames_per_cell": 12
+    },
+    "_comment_recurrence": "metrics is the state vector each frame of a cell is described by, and it is the same nine `regimes` clusters on so the two answer the same question two ways. threshold_quantile is the fraction of a cell's own frame pairs counted as 'the same state' - a quantile rather than a distance, so a cell that barely changes is not judged against one that never stops, and the distance it worked out to rides on every row as recurrence_threshold_distance. surrogates is how many matched-noise traces each cell is compared against; drifting noise recurs impressively, so the band is the point and lowering this weakens every claim the table supports. Every cell that was measured in min_observations frames gets a row: this is a measurement, not a page, so there is deliberately no way to ask for the best sixteen.",
+    "recurrence": {
+      "metrics": [
+        "area_px",
+        "circularity",
+        "solidity",
+        "ramification_index",
+        "aspect_ratio",
+        "skeleton_branches",
+        "turnover_index",
+        "step_px_gapless",
+        "punctateness"
+      ],
+      "threshold_quantile": 0.1,
+      "max_lag_hours": 12.0,
+      "surrogates": 100,
+      "null_model": "ar1",
+      "random_state": 20260825,
+      "min_observations": 4
+    },
+    "_comment_sequence_distance": "window_hours is how far one cell may be slid or stretched against another before the alignment gives up - four hours is enough that two cells doing the same thing half a night apart score as alike, and little enough that 'alike' still says something about timing. It reads the state numbers `regimes` writes, so it must come after `regimes` in enabled_modules; put it earlier and the run skips it and says which column was missing. min_overlap_steps is off by default, so every pair of classified cells gets a row: a pair that never had both cells on screen at once is maximally unlike, which is a finding rather than a gap, and dropping it here would quietly remove cells from anything that clusters the table. Raise it to filter, and read alignment_overlap_steps to see which distances rest on shared frames. It counts steps of the alignment rather than frames, so on a 99-frame movie it runs as high as 193.",
+    "sequence_distance": {
+      "window_hours": 4.0,
+      "min_overlap_steps": 0
+    },
+    "coupling": {
+      "max_lag_frames": 24,
+      "metric_pairs": [
+        [
+          "turnover_index",
+          "corrected_mean"
+        ],
+        [
+          "area_px",
+          "turnover_index"
+        ]
+      ],
+      "between_metrics": [
+        "corrected_mean"
+      ],
+      "min_overlap_steps": 60,
+      "surrogates": 200
+    },
+    "_comment_rhythms": "The block from bin_hours down is the non-parametric half - when the active phase runs, rather than how big it is - and it is transcribed from the lab's own CircadianWorkbench rather than derived here. bin_hours is the resolution of the folded average day that L5, M10 and the onset template are read off, and it must divide 24 hours; interdaily stability and intradaily variability are always hourly whatever it is, because that is their definition. low_window_hours and high_window_hours are the actigraphy conventions L5 and M10 are named after. onset_off_hours and onset_on_hours are how much quiet has to sit before a candidate hour and how much activity after it for ClockLab's template to call it an onset, and onset_threshold_percent of 80 puts the line between the two at the 20th percentile of the bins that cell was measured in. min_days_for_stability flags stability_underdetermined rather than withholding the number: two days is one comparison, which is computable and weak. Every hour these settings produce is hours since the recording started, not a time of day - this package has no clock.",
+    "rhythms": {
+      "metrics": [
+        "area_px",
+        "corrected_mean",
+        "integrated_density",
+        "solidity",
+        "ramification_index",
+        "turnover_index",
+        "step_px"
+      ],
+      "period_search_hours": [
+        16.0,
+        32.0
+      ],
+      "period_step_hours": 0.1,
+      "fixed_period_hours": 24.0,
+      "detrend": "linear",
+      "min_observations": 24,
+      "min_cycles_for_confident_period": 3.0,
+      "rhythmic_alpha": 0.05,
+      "null_surrogates_per_cell": 5,
+      "null_model": "ar1",
+      "null_seed": 20260824,
+      "bin_hours": 1.0,
+      "high_window_hours": 10.0,
+      "low_window_hours": 5.0,
+      "onset_off_hours": 6.0,
+      "onset_on_hours": 6.0,
+      "onset_threshold_percent": 80.0,
+      "min_days_for_stability": 3.0
+    }
+  }
+}

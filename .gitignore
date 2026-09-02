@@ -10,3 +10,23 @@
 !/code/
 /code/*
 !/code/*.py
+
+# Downstream analysis package: source and example configuration only.
+# The local analysis_config.json and everything under outputs/ stay private.
+!/analysis_config.example.json
+!/analysis_config.demo.json
+!/analysis/
+/analysis/*
+!/analysis/*.py
+!/analysis/README.md
+!/analysis/modules/
+/analysis/modules/*
+!/analysis/modules/*.py
+!/analysis/figures/
+/analysis/figures/*
+!/analysis/figures/*.py
+# The shared panel drawers every numbered figure imports. Without these the
+# package clones but does not run.
+!/analysis/figures/panels/
+/analysis/figures/panels/*
+!/analysis/figures/panels/*.py

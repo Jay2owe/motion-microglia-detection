@@ -1,0 +1,245 @@
+{
+  "dataset": "SYNTHETIC demo - one real movie replayed under invented groups",
+  "frame_interval_min": 30,
+  "microns_per_pixel": null,
+  "calibration_tiffs": [
+    "../Experiments/Tmem119-CreERT2/Tests/CD68-DIO-mCherry with HCQ/VID95_A3_green-red_timestack.tif"
+  ],
+  "output_root": "outputs",
+  "verify_hashes": true,
+  "theme": {
+    "preset": "house"
+  },
+  "enabled_modules": [
+    "morphology",
+    "intensity",
+    "channels",
+    "objects",
+    "object_geometry",
+    "motility",
+    "surveillance",
+    "motion_evidence",
+    "presence",
+    "territory",
+    "sholl",
+    "contacts",
+    "regimes",
+    "recurrence",
+    "sequence_distance",
+    "coupling",
+    "rhythms",
+    "neighbours",
+    "territory_shape",
+    "walk"
+  ],
+  "movies": [
+    {
+      "stem": "demo_A1",
+      "notes": "SYNTHETIC. The same 95_A3 outlines under an invented group label, so the two groups are identical by construction.",
+      "source_frame_offset": 2,
+      "labels": "issues/01_95_A3/ISSUE-022-registration-derived-tracking-evidence/analysis/evidence_ensemble/m25_verify_unclaimed_byte_copy/r01_default_on/out/95_A3.tif",
+      "unclaimed": "issues/01_95_A3/ISSUE-022-registration-derived-tracking-evidence/analysis/evidence_ensemble/m25_verify_unclaimed_byte_copy/r01_default_on/out/95_A3_unclaimed_original_ids.tif",
+      "raw": "../Longitudinal Cell Tracker/registered_inputs/r02_grossfix/out/95_A3.tif",
+      "evidence": "../Longitudinal Cell Tracker/motion_inputs/r05_grossfix/qc/95_A3_motion_evidence.tif",
+      "sha256": {
+        "labels": "d05e00a022b4d5d7efa880d36bb4be08a37119f6233aaef70c33317ab3a86c34",
+        "unclaimed": "0777a857f2a98ec222f260c065b87147c37dc5a4098d0fbd808e03f948d6045b",
+        "raw": "c0ae96855ec26cb8f9d61a808873c15fc60b6f31b9b4ab784cf8ec8563668af1",
+        "evidence": "56d4c56aecf8ee4f9b824756e0f496a616617d147740708b7e44a1af58aebefb"
+      },
+      "subject": "demo_subject_1"
+    },
+    {
+      "stem": "demo_B1",
+      "notes": "SYNTHETIC. The same 95_A3 outlines under an invented group label, so the two groups are identical by construction.",
+      "source_frame_offset": 2,
+      "labels": "issues/01_95_A3/ISSUE-022-registration-derived-tracking-evidence/analysis/evidence_ensemble/m25_verify_unclaimed_byte_copy/r01_default_on/out/95_A3.tif",
+      "unclaimed": "issues/01_95_A3/ISSUE-022-registration-derived-tracking-evidence/analysis/evidence_ensemble/m25_verify_unclaimed_byte_copy/r01_default_on/out/95_A3_unclaimed_original_ids.tif",
+      "raw": "../Longitudinal Cell Tracker/registered_inputs/r02_grossfix/out/95_A3.tif",
+      "evidence": "../Longitudinal Cell Tracker/motion_inputs/r05_grossfix/qc/95_A3_motion_evidence.tif",
+      "sha256": {
+        "labels": "d05e00a022b4d5d7efa880d36bb4be08a37119f6233aaef70c33317ab3a86c34",
+        "unclaimed": "0777a857f2a98ec222f260c065b87147c37dc5a4098d0fbd808e03f948d6045b",
+        "raw": "c0ae96855ec26cb8f9d61a808873c15fc60b6f31b9b4ab784cf8ec8563668af1",
+        "evidence": "56d4c56aecf8ee4f9b824756e0f496a616617d147740708b7e44a1af58aebefb"
+      },
+      "subject": "demo_subject_2"
+    }
+  ],
+  "modules": {
+    "morphology": {
+      "compute_skeleton": true,
+      "min_area_px_for_skeleton": 12
+    },
+    "intensity": {
+      "background_ring_inner_px": 4,
+      "background_ring_outer_px": 12,
+      "min_background_px": 25,
+      "bright_threshold_multiplier": 2.0
+    },
+    "motility": {
+      "max_msd_lag_frames": 24,
+      "min_frames_for_track_stats": 5
+    },
+    "surveillance": {
+      "max_gap_frames_for_turnover": 1
+    },
+    "motion_evidence": {
+      "channel_names": [
+        "base",
+        "lost",
+        "held",
+        "gained",
+        "trail"
+      ],
+      "trail_channel": "trail",
+      "trail_levels": null
+    },
+    "territory": {
+      "core_fraction": 0.8,
+      "transient_fraction": 0.2,
+      "count_unclaimed_as_visited": true
+    },
+    "sholl": {
+      "n_rings": 6,
+      "ring_width": null,
+      "centre": "soma",
+      "exclude_other_identities": true
+    },
+    "contacts": {
+      "dilation_px": [
+        1,
+        2
+      ],
+      "min_shared_boundary_px": 1,
+      "include_unclaimed": false
+    },
+    "regimes": {
+      "n_regimes": 4,
+      "standardise": true,
+      "random_state": 20260825,
+      "min_frames_per_cell": 12
+    },
+    "coupling": {
+      "max_lag_frames": 24,
+      "min_overlap_frames": 60,
+      "surrogates": 200
+    },
+    "rhythms": {
+      "metrics": [
+        "area_px",
+        "corrected_mean",
+        "integrated_density",
+        "solidity",
+        "ramification_index",
+        "turnover_index",
+        "step_px"
+      ],
+      "period_search_hours": [
+        16.0,
+        32.0
+      ],
+      "period_step_hours": 0.1,
+      "fixed_period_hours": 24.0,
+      "detrend": "linear",
+      "min_observations": 24,
+      "min_cycles_for_confident_period": 3.0,
+      "rhythmic_alpha": 0.05
+    }
+  },
+  "conditions": {
+    "synthetic": true,
+    "conditions": [
+      {
+        "name": "treated",
+        "label": "Treated (invented)",
+        "match": "_A\\d",
+        "colour": "red"
+      },
+      {
+        "name": "control",
+        "label": "Control (invented)",
+        "match": "_B\\d",
+        "colour": "blue",
+        "control": true
+      }
+    ]
+  },
+  "_comment_windows": "SYNTHETIC. Two halves of the same 49-hour recording, so the windowed machinery has something to chew on. Nothing changed at hour 24; these windows exist to exercise the code, not to describe an experiment.",
+  "windows": [
+    {
+      "name": "first_day",
+      "from_hours": 0.0,
+      "to_hours": 24.0,
+      "description": "SYNTHETIC. The first day of the recording."
+    },
+    {
+      "name": "second_day",
+      "from_hours": 24.0,
+      "to_hours": 49.0,
+      "baseline": "first_day",
+      "description": "SYNTHETIC. The rest, against the first day."
+    }
+  ],
+  "_comment_contrasts": "SYNTHETIC. The two 'movies' are the same recording under invented group labels, so every between-group result here must come out null - that is what makes it a test of the machinery rather than of an experiment. The second contrast is here to be refused: one subject a side is below the three-unit floor, and the refusal row is what proves the guard is wired to the data.",
+  "contrasts": [
+    {
+      "name": "demo_by_condition_cell",
+      "description": "SYNTHETIC. Cell-level, which is the pseudoreplicated unit; here to exercise the path, and null by construction.",
+      "family": "demo_cell",
+      "table": "cell_summary",
+      "metrics": [
+        "corrected_mean_median",
+        "area_px_median",
+        "turnover_index_median"
+      ],
+      "group_by": "condition",
+      "groups": [
+        "control",
+        "treated"
+      ],
+      "unit": "cell",
+      "test": "mannwhitney",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
+    },
+    {
+      "name": "demo_by_condition_subject",
+      "description": "SYNTHETIC. The honest unit, which this design cannot support - one subject a side. Expected to write refusal rows.",
+      "family": "demo_subject",
+      "table": "cell_summary",
+      "metrics": [
+        "corrected_mean_median"
+      ],
+      "group_by": "condition",
+      "groups": [
+        "control",
+        "treated"
+      ],
+      "unit": "subject",
+      "aggregate": "median",
+      "test": "mannwhitney",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
+    },
+    {
+      "name": "demo_second_day_against_first",
+      "description": "SYNTHETIC. Each cell against itself across the two halves of the recording - a paired test, and the one shape this design can support.",
+      "family": "demo_window",
+      "table": "cell_summary_windowed",
+      "metrics": [
+        "turnover_index_median",
+        "area_px_median"
+      ],
+      "group_by": "window",
+      "groups": [
+        "second_day",
+        "first_day"
+      ],
+      "unit": "cell",
+      "test": "wilcoxon",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
+    }
+  ]
+}
