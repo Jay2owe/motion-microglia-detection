@@ -19,6 +19,8 @@ disagreeing on purpose; on the pinned movie 880 cell-frames (10.7%) are
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 import numpy as np
 import pandas as pd
 from scipy import ndimage as ndi
@@ -81,6 +83,171 @@ def _union_shape(union: np.ndarray, max_circularity: float) -> dict:
         "territory_radius_p95_px": float(np.percentile(radii, 95)),
         "territory_components": int(ndi.label(union, structure=np.ones((3, 3)))[1]),
     }
+
+
+def _two_sided_permutation_p(null: np.ndarray, observed: float) -> float:
+    """Return a plus-one, two-sided empirical permutation p-value."""
+    finite = np.asarray(null, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0 or not np.isfinite(observed):
+        return float("nan")
+    lower = (1.0 + np.count_nonzero(finite <= observed)) / (finite.size + 1.0)
+    upper = (1.0 + np.count_nonzero(finite >= observed)) / (finite.size + 1.0)
+    return float(min(1.0, 2.0 * min(lower, upper)))
+
+
+def coverage_order_permutation_test(
+    occupancy_by_unit: Mapping[Any, Any],
+    *,
+    shuffles: int = 1_000,
+    random_state: int = 20_260_825,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Test whether territory is revealed differently from permuted frame order.
+
+    Each unit maps to a boolean ``(frame, row, column)`` occupancy stack. The
+    null reorders that unit's non-empty footprints among the same active frame
+    positions, preserving footprints and gaps while removing temporal order.
+    """
+    if int(shuffles) < 100:
+        raise ValueError("shuffles must be at least 100")
+    if not occupancy_by_unit:
+        raise ValueError("occupancy_by_unit must contain at least one unit")
+
+    generator = np.random.default_rng(int(random_state))
+    prepared: list[tuple[Any, np.ndarray, np.ndarray, np.ndarray]] = []
+    n_frames: int | None = None
+    for unit, values in occupancy_by_unit.items():
+        mask = np.asarray(values, dtype=bool)
+        if mask.ndim != 3:
+            raise ValueError(f"occupancy for {unit!r} must have shape (frame, row, column)")
+        if n_frames is None:
+            n_frames = int(mask.shape[0])
+        elif mask.shape[0] != n_frames:
+            raise ValueError("all occupancy stacks must contain the same number of frames")
+        active_indices = np.flatnonzero(mask.any(axis=(1, 2)))
+        union = mask.any(axis=0)
+        if active_indices.size and np.any(union):
+            prepared.append((unit, mask, active_indices, union))
+
+    if n_frames is None or n_frames == 0:
+        raise ValueError("occupancy stacks must contain at least one frame")
+    unit_columns = [
+        "unit", "observed_auc", "permutation_median_auc", "auc_difference",
+        "permutation_auc_lo", "permutation_auc_hi", "p_value",
+        "active_frames", "union_px",
+    ]
+    curve_columns = [
+        "unit", "frame_index", "observed_coverage_fraction",
+        "observed_population_median", "permutation_median",
+        "permutation_lo", "permutation_hi",
+    ]
+    if not prepared:
+        return pd.DataFrame(columns=unit_columns), pd.DataFrame(columns=curve_columns), {
+            "status": "no_eligible_units",
+            "units": 0,
+            "shuffles": int(shuffles),
+            "random_state": int(random_state),
+        }
+
+    unit_rows: list[dict[str, Any]] = []
+    observed_curves: list[np.ndarray] = []
+    null_curves: list[np.ndarray] = []
+    observed_aucs: list[float] = []
+    null_aucs: list[np.ndarray] = []
+    units: list[Any] = []
+
+    for unit, mask, active_indices, union in prepared:
+        active_masks = mask[active_indices][:, union]
+        first_active_slot = np.argmax(active_masks, axis=0)
+        first_full_frame = active_indices[first_active_slot]
+        observed_counts = np.bincount(first_full_frame, minlength=n_frames)
+        observed_curve = np.cumsum(observed_counts, dtype=float) / float(union.sum())
+
+        order = np.argsort(
+            generator.random((int(shuffles), active_indices.size)), axis=1
+        )
+        new_slot_by_original = np.argsort(order, axis=1)
+        null_first_slot = np.full(
+            (int(shuffles), int(union.sum())), active_indices.size, dtype=np.int32
+        )
+        for original_slot, occupied in enumerate(active_masks):
+            if np.any(occupied):
+                null_first_slot[:, occupied] = np.minimum(
+                    null_first_slot[:, occupied],
+                    new_slot_by_original[:, original_slot, None],
+                )
+        null_first_frame = active_indices[null_first_slot]
+        null_curve = np.empty((int(shuffles), n_frames), dtype=float)
+        for replicate in range(int(shuffles)):
+            counts = np.bincount(null_first_frame[replicate], minlength=n_frames)
+            null_curve[replicate] = np.cumsum(counts, dtype=float) / float(union.sum())
+
+        observed_auc = float(np.mean(observed_curve))
+        null_auc = np.mean(null_curve, axis=1)
+        null_auc_median = float(np.median(null_auc))
+        unit_rows.append(
+            {
+                "unit": unit,
+                "observed_auc": observed_auc,
+                "permutation_median_auc": null_auc_median,
+                "auc_difference": observed_auc - null_auc_median,
+                "permutation_auc_lo": float(np.quantile(null_auc, 0.025)),
+                "permutation_auc_hi": float(np.quantile(null_auc, 0.975)),
+                "p_value": _two_sided_permutation_p(null_auc, observed_auc),
+                "active_frames": int(active_indices.size),
+                "union_px": int(union.sum()),
+            }
+        )
+        units.append(unit)
+        observed_curves.append(observed_curve)
+        null_curves.append(null_curve)
+        observed_aucs.append(observed_auc)
+        null_aucs.append(null_auc)
+
+    observed_matrix = np.stack(observed_curves)
+    null_matrix = np.stack(null_curves)
+    observed_population = np.median(observed_matrix, axis=0)
+    null_population = np.median(null_matrix, axis=0)
+    permutation_median = np.median(null_population, axis=0)
+    permutation_lo = np.quantile(null_population, 0.025, axis=0)
+    permutation_hi = np.quantile(null_population, 0.975, axis=0)
+
+    curve_tables = []
+    for unit, curve in zip(units, observed_curves, strict=True):
+        curve_tables.append(
+            pd.DataFrame(
+                {
+                    "unit": unit,
+                    "frame_index": np.arange(n_frames, dtype=int),
+                    "observed_coverage_fraction": curve,
+                    "observed_population_median": observed_population,
+                    "permutation_median": permutation_median,
+                    "permutation_lo": permutation_lo,
+                    "permutation_hi": permutation_hi,
+                }
+            )
+        )
+
+    observed_population_auc = float(np.median(np.asarray(observed_aucs)))
+    null_population_auc = np.median(np.stack(null_aucs), axis=0)
+    null_median_auc = float(np.median(null_population_auc))
+    summary = {
+        "status": "ok",
+        "units": len(units),
+        "shuffles": int(shuffles),
+        "random_state": int(random_state),
+        "test": "two-sided frame-order permutation test",
+        "null_hypothesis": (
+            "cumulative territory coverage is unchanged when each unit's observed "
+            "footprints are reordered among the same active frames"
+        ),
+        "statistic": "median per-unit area under the cumulative coverage curve",
+        "observed_median_auc": observed_population_auc,
+        "permutation_median_auc": null_median_auc,
+        "auc_difference": observed_population_auc - null_median_auc,
+        "p_value": _two_sided_permutation_p(null_population_auc, observed_population_auc),
+    }
+    return pd.DataFrame(unit_rows), pd.concat(curve_tables, ignore_index=True), summary
 
 
 #: Territory splits into three bands by how often a pixel was occupied - core,

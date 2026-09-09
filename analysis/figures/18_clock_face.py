@@ -1,129 +1,274 @@
-"""Figure 18: peak time and relative amplitude on a 24 hour dial.
+"""Figure 18: peak position and fitted oscillation amplitude.
 
-Each cell is an arrow: its direction is when the fitted signal peaked, its
-length is how strong the rhythm was. The dial wraps at the period the fit
-assumed, which is stated on the figure rather than implied by it.
+Each arrow is one cell called rhythmic by the configured primary test. Its
+angle is the fitted peak within that cell's own detected period and its length
+is the fitted midline-to-peak change in the measurement's original units.
 
     python analysis/figures/18_clock_face.py <run>
     ... --metrics area_px        a different fitted measurement
-    ... --panels amplitude       the histogram alone
+    ... --panels amplitude       the amplitude histogram alone
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1]))
+sys.path.insert(0, str(HERE))
 
-from matplotlib.lines import Line2D
-import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 import numpy as np
+import pandas as pd
 
+from analysis.modules.rhythms import DEFAULTS as RHYTHM_DEFAULTS
+from _metrics import describe
 from _schema import FigureContext, FigureResult, Option, Panel, Table, figure, run_figure
-
 from panels import common
 from panels import rhythms as rhythm_panels
+
+
+CYCLE_TICKS = (0.0, 0.25, 0.5, 0.75)
+CYCLE_TICK_LABELS = ("0 (start)", "1/4", "1/2", "3/4")
+
+METHOD_LABELS = {
+    "lomb": "Lomb-Scargle periodogram",
+    "chi_square": "Enright-Sokolove periodogram",
+    "f": "F periodogram",
+    "jtk": "JTK_CYCLE",
+    "ejtk": "empirical JTK_CYCLE",
+}
+
+
+def _fallback_rows(fits: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """Recover the primary Lomb-Scargle result from runs made before method rows."""
+    source = fits.copy()
+    period = source.get("best_period_hours", source.get("lombscargle_period_hours"))
+    phase = source.get("best_phase_hours", source.get("free_cosinor_peak_hour"))
+    p_value = source.get("best_p_value", source.get("lombscargle_false_alarm"))
+    rhythmic = source.get("rhythmic", source.get("rhythmic_lombscargle", False))
+    amplitude = source.get("free_cosinor_amplitude", source.get("cosinor_amplitude"))
+    if period is None or phase is None or amplitude is None:
+        raise SystemExit(
+            "rhythms.csv has no detected-period phase and amplitude for the clock face"
+        )
+
+    period = pd.to_numeric(period, errors="coerce")
+    phase = pd.to_numeric(phase, errors="coerce")
+    rhythmic = pd.Series(rhythmic, index=source.index).fillna(False).astype(bool)
+    estimator = str(params.get(
+        "period_estimation_method", params.get("primary_rhythm_test", "lomb")))
+    significance = str(params.get("primary_rhythm_test", "lomb"))
+    default_label = METHOD_LABELS.get(estimator, estimator)
+    method_label = source.get("best_method_label", pd.Series(default_label, index=source.index))
+    alpha = source.get("best_alpha", pd.Series(float(params.get("alpha", 0.05)), index=source.index))
+    status = source.get(
+        "rhythm_status",
+        pd.Series(np.where(rhythmic, "rhythmic", "arrhythmic"), index=source.index),
+    )
+    return pd.DataFrame({
+        "identity": source["identity"],
+        "metric": source["metric"],
+        "method": estimator,
+        "method_label": method_label,
+        "significance_method": significance,
+        "significance_method_label": METHOD_LABELS.get(significance, significance),
+        "rhythm_status": status,
+        "rhythmic": rhythmic,
+        "period_hours": period,
+        "phase_hours": phase,
+        "phase_fraction": np.mod(phase, period) / period,
+        "amplitude": pd.to_numeric(amplitude, errors="coerce"),
+        "p_value": pd.to_numeric(p_value, errors="coerce") if p_value is not None else np.nan,
+        "alpha": pd.to_numeric(alpha, errors="coerce"),
+    })
+
+
+def _clock_rows(
+    fits: pd.DataFrame,
+    methods: pd.DataFrame | None,
+    metric: str,
+    params: dict,
+) -> pd.DataFrame:
+    """One explicit primary-test row per cell, with phase in hours and cycles."""
+    if methods is None:
+        return _fallback_rows(fits, params)
+    estimator_flag = methods.get(
+        "period_estimator", pd.Series(False, index=methods.index)).fillna(False)
+    estimated = methods[(methods["metric"] == metric) & estimator_flag].copy()
+    primary = methods[(methods["metric"] == metric) & methods["primary"].fillna(False)].copy()
+    if estimated.empty or primary.empty:
+        return _fallback_rows(fits, params)
+    verdict = primary[[
+        "identity", "metric", "method", "method_label", "method_rhythm_status",
+        "method_rhythmic", "p_value", "alpha",
+    ]].rename(columns={
+        "method": "significance_method",
+        "method_label": "significance_method_label",
+        "method_rhythm_status": "rhythm_status",
+        "method_rhythmic": "rhythmic",
+        "p_value": "significance_p_value",
+        "alpha": "significance_alpha",
+    })
+    selected = estimated[[
+        "identity", "metric", "method", "method_label", "period_hours",
+        "phase_hours", "amplitude",
+    ]].merge(verdict, on=["identity", "metric"], how="inner", validate="one_to_one")
+    period = pd.to_numeric(selected["period_hours"], errors="coerce")
+    phase = pd.to_numeric(selected["phase_hours"], errors="coerce")
+    selected["phase_fraction"] = np.mod(phase, period) / period
+    selected["p_value"] = selected.pop("significance_p_value")
+    selected["alpha"] = selected.pop("significance_alpha")
+    return selected
+
+
+def _label_cycle_axis(ax) -> None:
+    ax.set_xticks(2 * np.pi * np.asarray(CYCLE_TICKS))
+    ax.set_xticklabels(CYCLE_TICK_LABELS)
 
 
 @figure(
     number=18,
     slug="clock-face",
-    summary="peak time and relative amplitude on a 24 hour dial",
-    title="Peak time and relative amplitude on a 24 hour dial",
+    summary="peak position within each detected cycle and fitted oscillation amplitude",
+    title="{metric}: peak position and fitted oscillation amplitude",
     reads=(Table("rhythms.csv", module="rhythms"),
-           Table("rhythms_population.csv", module="rhythms")),
+           Table("rhythm_methods.csv", module="rhythms", optional=True)),
     panels=(
         Panel("dial", rhythm_panels.phase_dial, polar=True,
-              title="Peak time and rhythm strength for each cell"),
-        Panel("rose", common.rose, polar=True, title="Peak-time counts"),
-        Panel("amplitude", common.histogram, title="Rhythm strength"),
+              min_width_inches=6.5, min_height_inches=6.5,
+              title="Each arrow is one rhythmic cell\nAngle = peak position; length = fitted amplitude"),
+        Panel("rose", common.rose, polar=True,
+              min_width_inches=6.5, min_height_inches=6.5,
+              title="When rhythmic cells peak\nBar length = cells per phase bin"),
+        Panel("amplitude", common.histogram,
+              min_width_inches=12.5, min_height_inches=4.8,
+              title="How large the fitted oscillations are"),
     ),
     options=(
         Option("metrics", default="corrected_mean", cast=str, metavar="COL",
-               help="which fitted measurement the dial draws"),
-        Option("bins", default=24),
-        Option("hour_ticks", default=24.0),
+               help="which fitted measurement the clock draws"),
+        Option("bins", default=12),
     ),
-    grammar="polar vectors and rose histogram",
+    grammar="unit-labelled phase vectors, circular counts, and amplitude histogram",
 )
 def build(ctx: FigureContext) -> FigureResult:
-    rhythms = ctx.table("rhythms.csv")
-    population_path = ctx.table_path("rhythms_population.csv")
     metric = ctx.option("metrics")
-    data = rhythms[rhythms["metric"] == metric].copy()
-    if data.empty:
-        raise SystemExit(f"--metrics {metric} was not fitted; available: {', '.join(sorted(rhythms['metric'].unique()))}")
-    # ``cosinor_relative_amplitude`` keeps its own name here. It used to be
-    # shortened to ``relative_amplitude``, which now belongs to a different
-    # number on the same table - the non-parametric (M10 - L5) / (M10 + L5) -
-    # and one heading over two quantities is exactly the confusion the two
-    # names exist to prevent.
-    figure_data = data[["identity", "metric", "cosinor_peak_hour", "cosinor_relative_amplitude",
-                        "cosinor_r_squared", "rhythmic_both", "fixed_period_hours"]].rename(columns={
-                            "cosinor_peak_hour": "peak_hour",
-                            "cosinor_r_squared": "r_squared",
-                            "fixed_period_hours": "period_hours_assumed",
-                        })
+    rhythms = ctx.table("rhythms.csv")
+    methods = ctx.optional_table("rhythm_methods.csv")
+    params = {**RHYTHM_DEFAULTS, **ctx.module_params("rhythms")}
+    fits = rhythms[rhythms["metric"] == metric].copy()
+    if fits.empty:
+        available = ", ".join(sorted(set(rhythms["metric"])))
+        raise SystemExit(f"--metrics {metric} was not fitted; available: {available}")
+
+    figure_data = _clock_rows(fits, methods, metric, params)
+    for column in ("period_hours", "phase_hours", "phase_fraction", "amplitude",
+                   "p_value", "alpha"):
+        figure_data[column] = pd.to_numeric(figure_data[column], errors="coerce")
+    figure_data["rhythmic"] = figure_data["rhythmic"].fillna(False).astype(bool)
+    figure_data["included_in_plot"] = (
+        figure_data["rhythmic"]
+        & np.isfinite(figure_data["phase_fraction"])
+        & np.isfinite(figure_data["amplitude"])
+    )
+    plotted = figure_data[figure_data["included_in_plot"]].copy()
+
     panels = ctx.panels()
     if panels.keys == ["dial", "rose", "amplitude"]:
-        height = 9.8
-        fig = plt.figure(figsize=ctx.theme.canvas(13.8, height))
-        grid = fig.add_gridspec(
-            2, 2, left=0.14, right=0.94, bottom=1.55 / height,
-            top=1 - 1.65 / height, hspace=0.70, wspace=0.34,
+        fig, axes = ctx.grid_layout(
+            panels,
+            {
+                "dial": (0, 0, 1, 1),
+                "rose": (0, 1, 1, 1),
+                "amplitude": (1, 0, 1, 2),
+            },
+            top_inches=2.8,
+            bottom_inches=1.85,
+            horizontal_gap_inches=2.0,
+            vertical_gap_inches=1.35,
         )
-        axes = {
-            "dial": fig.add_subplot(grid[0, 0], projection="polar"),
-            "rose": fig.add_subplot(grid[0, 1], projection="polar"),
-            "amplitude": fig.add_subplot(grid[1, :]),
-        }
-        for name, ax in axes.items():
-            ax.set_title(ctx.spec.panel(name).heading(), loc="left", fontsize=ctx.theme.size("panel"),
-                         fontweight="bold")
     else:
-        fig, axes = ctx.layout(panels)
-    period = float(data["fixed_period_hours"].iloc[0])
+        fig, axes = ctx.layout(panels, gap_inches=1.25)
+
+    metric_info = describe(metric)
+    unit = metric_info.unit_text(ctx.interval)
+    amplitude_label = "Fitted oscillation amplitude" + (f" ({unit})" if unit else "")
+
     if "dial" in axes:
-        rhythm_panels.phase_dial(axes["dial"], figure_data["peak_hour"],
-                                 figure_data["cosinor_relative_amplitude"], ctx.theme,
-                                 passed=figure_data["rhythmic_both"], period_hours=period,
-                                 hour_ticks=ctx.hour_ticks,
-                                 radius_label="Fitted amplitude over the mean")
-        common.semantic_legend(
-            axes["dial"], ctx.theme,
-            handles=[
-                Line2D([], [], color=ctx.theme.colour("rhythmic"), marker=">", linestyle="none",
-                       label="Passed both rhythm tests"),
-                Line2D([], [], color=ctx.theme.colour("arrhythmic"), marker=">", markerfacecolor="none",
-                       linestyle="none", label="Did not pass both tests"),
-                Line2D([], [], color=ctx.theme.colour("highlight"), linewidth=ctx.theme.stroke("emphasis"),
-                       label="Amplitude-weighted mean peak"),
-            ], labels=["Passed both rhythm tests", "Did not pass both tests", "Amplitude-weighted mean peak"],
-            location="below",
+        rhythm_panels.phase_dial(
+            axes["dial"], plotted["phase_fraction"], plotted["amplitude"], ctx.theme,
+            passed=np.ones(len(plotted), dtype=bool), period_hours=1.0,
+            resultant=False, radius_label=amplitude_label,
+            tick_values=CYCLE_TICKS, tick_labels=CYCLE_TICK_LABELS,
         )
+        axes["dial"].set_rlabel_position(135)
+        axes["dial"].yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=3))
+        axes["dial"].yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+        axes["dial"]._semantic_legend_handled = True
+
     if "rose" in axes:
-        counts = common.rose(
-            axes["rose"], figure_data["peak_hour"], ctx.theme,
-            bins=int(ctx.option("bins")), period=period, role="reporter",
-        ).data["count"].to_numpy()
-        radians = 2 * np.pi * figure_data["peak_hour"].to_numpy(float) / period
-        direction = float(np.angle(np.sum(np.exp(1j * radians))) % (2 * np.pi))
-        concentration = float(np.abs(np.sum(np.exp(1j * radians))) / max(len(radians), 1))
-        axes["rose"].annotate(
-            "Mean peak time",
-            xy=(direction, max(float(np.max(counts)), 1.0) * concentration),
-            xytext=(16, 12), textcoords="offset points",
-            fontsize=ctx.theme.size("caption"), color=ctx.theme.colour("ink"),
-            bbox={"facecolor": "white", "alpha": 0.78, "edgecolor": "none", "pad": 1.5},
+        common.rose(
+            axes["rose"], plotted["phase_fraction"], ctx.theme,
+            bins=int(ctx.option("bins")), period=1.0, role="reporter", mean_vector=False,
         )
+        _label_cycle_axis(axes["rose"])
+        axes["rose"].set_rlabel_position(135)
+        axes["rose"].yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True, min_n_ticks=3))
+        axes["rose"].yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
         axes["rose"]._semantic_legend_handled = True
+
     if "amplitude" in axes:
-        common.histogram(axes["amplitude"], figure_data["cosinor_relative_amplitude"], ctx.theme,
-                         bins=int(ctx.option("bins")), role="reporter",
-                         x_label="Fitted amplitude over the mean", y_label="Cells")
+        common.histogram(
+            axes["amplitude"], plotted["amplitude"], ctx.theme,
+            bins=int(ctx.option("bins")), role="reporter",
+            x_label=amplitude_label, y_label="Rhythmic cells",
+        )
+
+    tested = len(figure_data)
+    rhythmic = int(figure_data["rhythmic"].sum())
+    method = (str(figure_data["method"].dropna().mode().iloc[0])
+              if figure_data["method"].notna().any() else "")
+    method_label = METHOD_LABELS.get(
+        method,
+        str(figure_data["method_label"].dropna().mode().iloc[0])
+        if figure_data["method_label"].notna().any() else "the selected period estimator",
+    )
+    significance_label = (
+        str(figure_data["significance_method_label"].dropna().mode().iloc[0])
+        if "significance_method_label" in figure_data
+        and figure_data["significance_method_label"].notna().any()
+        else "the configured rhythm test"
+    )
+    alpha = figure_data["alpha"].dropna()
+    threshold = f"p <= {float(alpha.iloc[0]):g}" if not alpha.empty else "its configured threshold"
+    if plotted.empty:
+        subtitle = f"0 of {tested} cells were rhythmic by {significance_label} ({threshold})."
+        period_sentence = "No rhythmic-cell period was available to draw."
+    else:
+        low = float(plotted["period_hours"].min())
+        high = float(plotted["period_hours"].max())
+        subtitle = (
+            f"{rhythmic} of {tested} cells were rhythmic by {significance_label} ({threshold}); "
+            f"{method_label} supplied each cell's {low:g}-{high:g} h period and peak."
+        )
+        period_sentence = "Exact detected periods and phases in hours are in figure_data.csv."
+
+    statistics = figure_data[[
+        "identity", "metric", "method", "method_label", "significance_method",
+        "significance_method_label", "rhythm_status", "rhythmic",
+        "period_hours", "phase_hours", "p_value", "alpha",
+    ]].copy()
     return FigureResult(
         figure=fig,
         axes=list(axes.values()),
         figure_data=figure_data,
-        subtitle=f"{len(figure_data)} fitted identities; the dial wraps at the assumed {period:g} h period.",
+        auxiliary={"statistics.csv": statistics},
+        subtitle=subtitle,
+        footnote=(
+            "The dial starts at the top and runs clockwise through one detected cycle. "
+            f"Amplitude is the fitted midline-to-peak change (half peak-to-trough)"
+            f"{f' in {unit}' if unit else ''}. {period_sentence}"
+        ),
+        title_fields={"metric": metric_info.label},
     )
 
 

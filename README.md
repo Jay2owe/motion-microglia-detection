@@ -72,6 +72,23 @@ It introduces no identity, preserves the foreground-ledger union, and receives
 no identity, track, frame, event, coordinate, region, or review-case targets.
 Issues 065, 074, 081, 084, and 086 remain excluded from accepted production.
 
+Per-well accepted tails now extend that common history. For `95_A2`, Issue 001
+applies exclusive pair-seat recovery at stage 61, Issue 002 applies an isolated
+reciprocal two-seat exchange repair at stage 62, and Issue 003 repairs bounded
+duplicate-owner excursions at stage 63. All use current-run physical evidence,
+accept no identity or local target, preserve the foreground and unclaimed
+ledgers, and remain zero-change on protected `95_A1` and `95_A3`. The current A2
+baseline is `m22_accepted_history/a2_i003_r01_a003_accepted_95_A2`.
+
+For `95_B3`, accepted label reconciliation now extends through stage 116.
+Issue 026 joins a long raw-visible terminal dropout to one uniquely closer
+movie-new successor and any uniquely linked mostly ownerless continuation.
+The rule is field-wide, retires an alias only from its own producer proof, and
+requires explicit durable-host or projection-host evidence for every raw
+component-count increase. Its accepted run is
+`m22_accepted_history/b3_i026_r01_a003_accepted_95_B3`; A3, A1, A2, A4, A5,
+B1 and B2 are exact no-ops under the same rule.
+
 The accepted disruption-confidence catalogue retains the score-only Issue 083
 alternating-reference calibration on the Issue 089 labels. It removes a merge alert only when two
 same-birth references share one owner, alternate visibility inside an uncensored

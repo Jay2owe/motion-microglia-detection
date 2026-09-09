@@ -39,14 +39,16 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import cdist
 
-from analysis.modules.rhythms import _detrend, _surrogate
+from analysis import circadian as workbench
+from analysis.modules.rhythms import _surrogate
 from analysis.registry import Column, MeasurementContext, Output, register_derived
 
 DEFAULTS = {
+    **workbench.DETREND_DEFAULTS,
     # Copied from 32_recurrence_wall.py so the module reproduces the figure.
-    # The state vector is the same nine measurements ``regimes`` clusters on:
-    # shape, branching, footprint turnover and step size, which between them
-    # describe what a microglial cell is doing without naming any one family.
+    # Recurrence deliberately keeps a broad nine-measurement state vector. The
+    # ``regimes`` classifier now asks the narrower size-and-movement question;
+    # recurrence asks whether the cell returns to a fuller morphological state.
     "metrics": [
         "area_px",
         "circularity",
@@ -68,6 +70,18 @@ DEFAULTS = {
     # Four frames is the smallest matrix with a diagonal run of two in it.
     "min_observations": 4,
 }
+
+
+def _parameters(context: MeasurementContext) -> dict:
+    """Recurrence settings after inheriting the main rhythm detrending choice."""
+    shared_detrending = workbench.detrend_settings(
+        context.module_params("rhythms"))
+    params = {
+        **DEFAULTS,
+        **shared_detrending,
+        **context.module_params("recurrence"),
+    }
+    return {**params, **workbench.detrend_settings(params)}
 
 
 def recurrence_runs(matrix: np.ndarray) -> tuple[float, float]:
@@ -123,7 +137,13 @@ def recurrence_runs(matrix: np.ndarray) -> tuple[float, float]:
 _NEGLIGIBLE_SPREAD = 1e-12
 
 
-def state_matrix(hours: np.ndarray, values: np.ndarray) -> np.ndarray:
+def state_matrix(
+    hours: np.ndarray,
+    values: np.ndarray,
+    *,
+    detrend: str = str(workbench.DETREND_DEFAULTS["detrend"]),
+    window_hours: float = float(workbench.DETREND_DEFAULTS["detrend_window_hours"]),
+) -> np.ndarray:
     """Detrended, standardised state vectors: one row per frame.
 
     Detrended because a cell that is steadily growing would otherwise resemble
@@ -133,15 +153,25 @@ def state_matrix(hours: np.ndarray, values: np.ndarray) -> np.ndarray:
     rounding error, which leaves it contributing nothing - the honest answer for
     a measurement that carries no information about this cell.
     """
-    detrended = np.column_stack(
-        [_detrend(hours, values[:, column], "linear") for column in range(values.shape[1])]
-    )
-    spread = detrended.std(axis=0)
+    settings = workbench.detrend_settings(
+        {"detrend": detrend, "detrend_window_hours": window_hours})
+    detrended = np.column_stack([
+        np.asarray(
+            workbench.detrend_trace(
+                hours, values[:, column], settings)["values"], dtype=float)
+        for column in range(values.shape[1])
+    ])
+    spread = np.nanstd(detrended, axis=0)
     magnitude = np.maximum(np.abs(values).max(axis=0), 1.0)
     informative = spread > _NEGLIGIBLE_SPREAD * magnitude
-    return np.where(informative,
-                    (detrended - detrended.mean(axis=0)) / np.where(informative, spread, 1.0),
-                    0.0)
+    states = np.where(
+        informative,
+        (detrended - np.nanmean(detrended, axis=0))
+        / np.where(informative, spread, 1.0),
+        0.0,
+    )
+    states[~np.isfinite(detrended).all(axis=1)] = np.nan
+    return states
 
 
 PRODUCES = (
@@ -157,6 +187,8 @@ PRODUCES = (
     Column("recurrence_surrogate_lo", "Matched-noise band, lower", "fraction", "reference"),
     Column("recurrence_surrogate_hi", "Matched-noise band, upper", "fraction", "reference"),
     Column("recurrence_pairs", "Frame pairs compared", "pairs", "morphology"),
+    Column("detrend", "How the trend was removed", "name", "reference"),
+    Column("detrend_window_hours", "Baseline window used for detrending", "h", "reference"),
     Column("determinism", "Recurrent points in diagonal runs", "fraction", "morphology"),
     Column("laminarity", "Recurrent points in vertical runs", "fraction", "morphology"),
     Column("determinism_surrogate", "Determinism in matched noise", "fraction", "reference"),
@@ -183,9 +215,11 @@ WRITES = (
     defaults=DEFAULTS,
     produces=PRODUCES,
     writes=WRITES,
+    resolve_params=_parameters,
 )
 def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, pd.DataFrame]:
-    params = {**DEFAULTS, **context.module_params("recurrence")}
+    params = _parameters(context)
+    detrending = workbench.detrend_settings(params)
     metrics = [metric for metric in params["metrics"] if metric in cell_frame.columns]
     if not metrics:
         return {}
@@ -206,10 +240,18 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
     quantified_rows: list[dict] = []
     for identity, group in complete.groupby("identity", sort=True):
         group = group.sort_values("frame_index")
+        hours = group["hours"].to_numpy(float)
+        values = state_matrix(
+            hours,
+            group[metrics].to_numpy(float),
+            detrend=detrending["detrend"],
+            window_hours=detrending["detrend_window_hours"],
+        )
+        finite_state = np.isfinite(values).all(axis=1)
+        group = group.loc[finite_state].copy()
+        values = values[finite_state]
         if len(group) < min_observations:
             continue
-        hours = group["hours"].to_numpy(float)
-        values = state_matrix(hours, group[metrics].to_numpy(float))
         distances = cdist(values, values)
         upper = distances[np.triu_indices_from(distances, 1)]
         cutoff = float(np.quantile(upper, quantile))
@@ -247,6 +289,8 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                 "recurrence_surrogate_lo": float(low[position]),
                 "recurrence_surrogate_hi": float(high[position]),
                 "recurrence_pairs": int(len(group) - lag),
+                "detrend": detrending["detrend"],
+                "detrend_window_hours": detrending["detrend_window_hours"],
             })
 
         determinism, laminarity = recurrence_runs(recurrence)
@@ -259,6 +303,8 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
             "laminarity_surrogate": float(null_quantified[:, 1].mean()),
             "recurrence_observations": int(len(group)),
             "recurrence_metrics_used": int(len(metrics)),
+            "detrend": detrending["detrend"],
+            "detrend_window_hours": detrending["detrend_window_hours"],
         })
 
     output: dict[str, pd.DataFrame] = {}

@@ -66,6 +66,32 @@ def test_an_absent_entry_is_not_an_empty_one(tmp_path):
     assert text.footnote == "kept" and text.source["footnote"] == "default"
 
 
+def test_builder_details_stay_in_audit_text_but_not_on_the_canvas(tmp_path):
+    text = figure_text(
+        _run(tmp_path), "demo", argv=[], title="Area against time",
+        subtitle="83 cells", footnote="Measurements use raw values.",
+        note="A side note.",
+    )
+    canvas = text.on_canvas()
+    assert canvas.title == "Area against time"
+    assert canvas.subtitle == ""
+    assert canvas.footnote == ""
+    assert canvas.note == ""
+    assert text.subtitle == "83 cells"
+    assert text.footnote == "Measurements use raw values."
+
+
+def test_explicit_details_are_drawn_on_the_canvas(tmp_path):
+    run = _run(tmp_path, {"demo": {"subtitle": "Chosen subtitle"}})
+    text = figure_text(
+        run, "demo", argv=["--footnote", "Chosen footnote"],
+        subtitle="Builder subtitle", footnote="Builder footnote",
+    )
+    canvas = text.on_canvas()
+    assert canvas.subtitle == "Chosen subtitle"
+    assert canvas.footnote == "Chosen footnote"
+
+
 def test_a_flag_can_blank_a_slot_too(tmp_path):
     text = figure_text(_run(tmp_path), "demo", argv=["--subtitle="], subtitle="83 cells")
     assert text.subtitle == ""

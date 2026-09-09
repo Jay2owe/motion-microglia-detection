@@ -105,18 +105,17 @@ def test_a_grain_is_made_of_columns_something_produces() -> None:
 def test_the_package_declares_every_table_it_writes() -> None:
     """A count, so a module cannot quietly stop declaring one.
 
-    Twenty-eight from the fourteen measurement modules, sixteen from regimes,
-    rhythms, coupling, territory_shape, walk, recurrence and sequence_distance,
-    twenty-one from history - sixteen of which are the tracker's own tables
-    copied through. The three added last are ``recurrence`` and
-    ``recurrence_quantification``, which say whether a cell returns to states it
-    has been in before, and ``sequence_distance``, which says how alike two
-    cells' state sequences are; all three used to be computed inside a figure
-    and thrown away. If this number changes it should change because a table was
-    deliberately added or removed, and the completion note should say which.
+    Twenty-eight from the fourteen measurement modules, nineteen from regimes,
+    rhythms, coupling, territory_shape, walk, recurrence, sequence_distance and
+    trend, twenty-one from history - sixteen of which are the tracker's own
+    tables copied through. The derived total includes ``rhythm_traces``: the
+    Circadian Workbench-detrended trace that downstream plots can reuse without
+    silently choosing another baseline. If this number changes it should
+    change because a table was deliberately added or removed, and the completion
+    note should say which.
     """
     declared = declared_tables()
-    assert len(declared) == 65, sorted(declared)
+    assert len(declared) == 68, sorted(declared)
     assert len({m.name for m in list_modules() for o in m.writes}) == 14
     assert sum(1 for o in declared.values() if o.origin == "tracker") == 16
 

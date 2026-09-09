@@ -1,23 +1,18 @@
-"""Does each cell cycle, and when does it peak?
+"""Does each cell cycle, which tests detect it, and at what period?
 
-Two independent tests are run on every requested measurement, because they fail
-in different ways and agreement between them is the evidence:
+Circadian Workbench runs every requested period method independently.  The
+default Lomb-Scargle, chi-square and F periodograms all search the configured
+period range and each writes its own period, p-value, threshold and
+rhythmic/arrhythmic/unknown verdict to ``rhythm_methods.csv``. Lomb-Scargle is
+the default overall verdict because it tolerates missing frames; the user can
+choose another significance-bearing method. Cosinor remains available for
+amplitude and phase description, but it no longer decides which cells are
+rhythmic.
 
-* **Cosinor** fits a single cosine wave and reports how tall it is (amplitude),
-  when it peaks (acrophase) and how much of the variation it explains. It is
-  strong when a rhythm is close to a clean sine and weak when it is not.
-* **Lomb-Scargle** scans a range of periods and reports which one carries the
-  most power. It handles missing frames without interpolation, which matters
-  because cells drop out of the outlines for a frame or two.
-
-Both answer "is there a rhythm and how big". Neither answers *when*, which is
-how a circadian result is usually reported, so every row also carries the
-**non-parametric block**: the busiest ten hours of the average day and the
-quietest five (M10 and L5), how far apart they are (relative amplitude), when
-the active phase starts and ends, how much one day resembles the next
-(interdaily stability) and how broken up the daily pattern is (intradaily
-variability). Those are transcribed from the lab's own CircadianWorkbench
-rather than derived here; see the block above ``PRODUCES``.
+An explicitly enabled **daily profile block** adds Circadian Workbench's M10,
+L5, onset, offset, interdaily stability and intradaily variability measures.
+It is off by default because these measures fold the trace into a 24-hour day;
+they answer a daily question rather than estimating an unknown period.
 
 None of this is specific to brightness. The module fits whatever ``metrics``
 names, so cell size, branching, footprint turnover and step size get the same
@@ -37,8 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy import signal, stats
 
+from analysis import circadian as workbench
 from analysis.registry import Column, MeasurementContext, Output, register_derived
 
 DEFAULTS = {
@@ -50,13 +45,14 @@ DEFAULTS = {
         "turnover_index",
         "step_px",
     ],
-    "period_search_hours": [16.0, 32.0],
-    "period_step_hours": 0.1,
-    "fixed_period_hours": 24.0,
-    "detrend": "linear",
-    "min_observations": 24,
-    "min_cycles_for_confident_period": 3.0,
-    "rhythmic_alpha": 0.05,
+    # One shared contract spans ultradian, circadian-like and infradian
+    # candidates. Period estimation remains independent of the rhythmicity
+    # test, so fit-only estimators such as FFT-NLLS and MESA are selectable.
+    **workbench.PERIOD_ANALYSIS_DEFAULTS,
+    **workbench.DETREND_DEFAULTS,
+    # Display vocabulary for a continuous period result.  These boundaries do
+    # not affect the test or its p-value; they only name the returned candidate.
+    "circadian_band_hours": [20.0, 28.0],
     # Surrogate control. Slowly drifting noise passes a cosinor fit far more
     # often than a p-value suggests, so the package measures its own false
     # positive rate rather than assuming it. "ar1" builds surrogates with the
@@ -66,7 +62,12 @@ DEFAULTS = {
     "null_surrogates_per_cell": 5,
     "null_model": "ar1",
     "null_seed": 20260824,
-    # --- the non-parametric block ---------------------------------------
+    # Legacy fixed-period cosinor columns are available only when explicitly
+    # requested. They never supply the selected period or rhythm verdict.
+    "descriptive_cosinor": False,
+    # --- optional fixed-day profile block -------------------------------
+    # This is a separate scientific question from free period estimation.
+    "daily_profile_measures": False,
     # Window lengths are the actigraphy conventions and are settings rather
     # than constants: a 30-minute frame interval makes M10 twenty frames, and
     # a dataset imaged every 5 minutes would make it 120.
@@ -83,126 +84,22 @@ DEFAULTS = {
 }
 
 
-def _detrend(hours: np.ndarray, values: np.ndarray, method: str) -> np.ndarray:
-    if method == "none":
-        return values
-    if method == "linear":
-        slope, intercept = np.polyfit(hours, values, 1)
-        return values - (slope * hours + intercept)
-    if method == "mean":
-        return values - values.mean()
-    raise ValueError(f"unknown detrend method {method!r}")
-
-
-def cosinor(
+def _detrend(
     hours: np.ndarray,
     values: np.ndarray,
-    period_hours: float,
-    reference_level: float | None = None,
-) -> dict:
-    """Least-squares fit of ``mesor + amplitude * cos(2*pi*t/period - acrophase)``.
-
-    ``values`` is normally detrended, which puts its own mesor at roughly zero.
-    Relative amplitude must therefore be taken against ``reference_level`` - the
-    mean of the trace before detrending - or it divides by nothing and returns
-    nonsense.
-    """
-    n = len(hours)
-    if n < 4:
-        return {}
-    omega = 2.0 * np.pi / period_hours
-    design = np.column_stack([np.ones(n), np.cos(omega * hours), np.sin(omega * hours)])
-    coefficients, residual_sum, *_ = np.linalg.lstsq(design, values, rcond=None)
-    mesor, beta, gamma = coefficients
-    fitted = design @ coefficients
-    residuals = values - fitted
-    ss_residual = float(np.sum(residuals ** 2))
-    ss_total = float(np.sum((values - values.mean()) ** 2))
-    amplitude = float(np.hypot(beta, gamma))
-    acrophase = float(np.arctan2(-gamma, beta))
-    peak_hour = float((acrophase % (2 * np.pi)) / omega)
-
-    r_squared = 1.0 - ss_residual / ss_total if ss_total > 0 else np.nan
-    degrees = n - 3
-    if degrees > 0 and ss_residual > 0 and ss_total > ss_residual:
-        f_statistic = ((ss_total - ss_residual) / 2.0) / (ss_residual / degrees)
-        p_value = float(stats.f.sf(f_statistic, 2, degrees))
-    else:
-        f_statistic, p_value = np.nan, np.nan
-
-    # Relative amplitude error: standard error of the amplitude over the
-    # amplitude itself. Below about 0.3 is conventionally called rhythmic.
-    if degrees > 0 and ss_residual > 0:
-        sigma_squared = ss_residual / degrees
-        covariance = sigma_squared * np.linalg.pinv(design.T @ design)
-        amplitude_variance = (
-            beta ** 2 * covariance[1, 1]
-            + gamma ** 2 * covariance[2, 2]
-            + 2 * beta * gamma * covariance[1, 2]
-        ) / max(amplitude ** 2, 1e-12)
-        relative_amplitude_error = float(np.sqrt(max(amplitude_variance, 0.0)) / amplitude) if amplitude > 0 else np.nan
-    else:
-        relative_amplitude_error = np.nan
-
-    denominator = reference_level if reference_level is not None else mesor
-    return {
-        "cosinor_mesor": float(mesor),
-        "cosinor_amplitude": amplitude,
-        "cosinor_relative_amplitude": (
-            float(amplitude / abs(denominator)) if denominator else np.nan
-        ),
-        "cosinor_peak_hour": peak_hour,
-        "cosinor_r_squared": float(r_squared),
-        "cosinor_p_value": p_value,
-        "cosinor_relative_amplitude_error": relative_amplitude_error,
-    }
-
-
-def lomb_scargle(hours: np.ndarray, values: np.ndarray, periods: np.ndarray) -> dict:
-    """Periodogram over a period grid, with an analytic false-alarm probability."""
-    centred = values - values.mean()
-    if np.allclose(centred, 0):
-        return {}
-    angular = 2.0 * np.pi / periods
-    power = signal.lombscargle(hours, centred, angular, normalize=True)
-    best = int(np.argmax(power))
-    peak_power = float(power[best])
-    independent = max(len(periods), 2)
-    false_alarm = float(1.0 - (1.0 - np.exp(-peak_power * len(hours) / 2.0)) ** independent)
-    return {
-        "lombscargle_period_hours": float(periods[best]),
-        "lombscargle_power": peak_power,
-        "lombscargle_false_alarm": min(max(false_alarm, 0.0), 1.0),
-    }
-
-
-def rayleigh(peak_hours: np.ndarray, period_hours: float) -> dict:
-    """Do the cells peak at the same time of day, or at random times?
-
-    Each cell's peak is a direction on a 24-hour clock face. If the cells are
-    independent oscillators the arrows point everywhere and cancel; if the
-    tissue shares a clock they add up. ``vector_length`` is how much they add
-    up, from 0 (scattered) to 1 (identical), and the Rayleigh p-value is the
-    chance of seeing that much agreement from random directions.
-    """
-    angles = 2.0 * np.pi * np.asarray(peak_hours, dtype=float) / period_hours
-    angles = angles[np.isfinite(angles)]
-    n = len(angles)
-    if n < 3:
-        return {}
-    cosine, sine = float(np.cos(angles).sum()), float(np.sin(angles).sum())
-    resultant = float(np.hypot(cosine, sine))
-    # Zar (1999) approximation to the Rayleigh probability.
-    p_value = float(
-        np.exp(np.sqrt(1.0 + 4.0 * n + 4.0 * (n ** 2 - resultant ** 2)) - (1.0 + 2.0 * n))
+    method: str,
+    window_hours: float = float(workbench.DETREND_DEFAULTS["detrend_window_hours"]),
+    detrend_options: dict | None = None,
+) -> np.ndarray:
+    """Compatibility helper; Circadian Workbench owns every implementation."""
+    result = workbench.detrend_trace(
+        hours,
+        values,
+        {**workbench.DETREND_DEFAULTS, **dict(detrend_options or {})},
+        method=method,
+        window_hours=window_hours,
     )
-    mean_hour = float((np.arctan2(sine, cosine) % (2 * np.pi)) * period_hours / (2 * np.pi))
-    return {
-        "cells": n,
-        "vector_length": resultant / n,
-        "mean_peak_hour": mean_hour,
-        "rayleigh_p_value": min(p_value, 1.0),
-    }
+    return np.asarray(result["values"], dtype=float)
 
 
 def _surrogate(values: np.ndarray, model: str, generator: np.random.Generator) -> np.ndarray:
@@ -226,254 +123,28 @@ def _surrogate(values: np.ndarray, model: str, generator: np.random.Generator) -
     raise ValueError(f"unknown null model {model!r}")
 
 
-# ---------------------------------------------------------------------------
-# The non-parametric block: when the active phase runs, rather than how big it
-# is. Everything below is transcribed from the lab's own CircadianWorkbench
-# (v0.5.0, MIT, `circadian-workbench` on PyPI), `src/circadian_workbench/
-# analysis.py`: `_circular_window` at line 1362, `nonparametric_metrics` at
-# 1375, `_template_scores` at 420 and `_template_marker` at 438.
-#
-# Copied rather than imported. The functions are eighty lines and hold no state,
-# and the package they live in pulls a web stack - FastAPI, uvicorn, statsmodels
-# - into what is meant to ship as one measurement tool.
-# `test_nonparametric_circadian` runs the same trace through both and requires
-# the same answer, so the copy cannot drift silently; the version copied from is
-# recorded here so the two can be diffed.
-#
-# Three things had to be adapted, and each is marked where it happens:
-#
-# 1. **The workbench knows the time of day and this package does not.** Every
-#    function there is written against real timestamps. `cell_frame` carries
-#    `hours` - hours since the recording started - and nothing else, so the day
-#    is folded on `hours % 24`. The arithmetic is identical; what the answer
-#    means is not. An onset of 7.5 is "seven and a half hours in", not "half
-#    past seven", and two movies started at different times of day cannot have
-#    their onsets compared at all. Every affected column says "h from start" in
-#    its unit. Adding a recording start time to the configuration is what would
-#    fix it, and it is a decision nobody has made.
-# 2. **A bin is a mean, not a sum.** Activity counts add up over a bin;
-#    brightness, area and solidity do not.
-# 3. **Nothing is excluded as a structural zero.** The workbench takes its
-#    threshold over non-zero bins, because a zero count means the beam was never
-#    broken - an absence rather than a low value. A cell's area is never
-#    structurally zero and a turnover of zero is a real measurement, so the
-#    threshold here is taken over every measured bin.
+# Public compatibility names retained for existing figure builders. Every
+# calculation crosses the Circadian Workbench gateway.
+cosinor = workbench.cosinor
+nonparametric = workbench.nonparametric
+rayleigh = workbench.phase_summary
 
-
-def _binned(hours: np.ndarray, values: np.ndarray, bin_hours: float) -> np.ndarray:
-    """Mean value per bin, anchored at hour zero of the *recording*.
-
-    Anchored at the recording rather than at each cell's own first frame, which
-    is the whole reason two cells' onsets can be compared with each other. A
-    per-cell anchor would fold a cell that appeared five hours in onto a day
-    starting five hours later, and every hour reported for it would be measured
-    on a different clock from its neighbour's - silently, and only visibly wrong
-    once somebody compared two cells. The workbench anchors on the first
-    midnight for the same reason; this package has no midnight, so it uses the
-    only shared origin it has.
-
-    The leading bins of a late-arriving cell are therefore ``NaN``, which is
-    exactly what they are: not looked at. Gap-aware throughout - a cell not
-    measured anywhere in a bin gives ``NaN`` rather than zero, because zero is a
-    value and "not looked at" is not, and every measure below treats the two
-    differently.
-    """
-    hours = np.asarray(hours, dtype=float)
-    values = np.asarray(values, dtype=float)
-    if not len(hours):
-        return np.zeros(0)
-    index = np.floor(hours / bin_hours).astype(int)
-    binned = np.full(int(index.max()) + 1, np.nan)
-    for position in range(len(binned)):
-        chosen = values[index == position]
-        if len(chosen):
-            binned[position] = float(np.mean(chosen))
-    return binned
-
-
-def _folded_day(binned: np.ndarray, bins_per_day: int) -> np.ndarray:
-    """Every day of the recording averaged into one, bin by bin.
-
-    This is the step an independent implementation gets wrong. L5 and M10 are
-    not the quietest and busiest stretches *somewhere in the recording*; they
-    are stretches of the average day, so a cell quiet at the same hour on both
-    days scores lower than one quiet for five hours once.
-    """
-    profile = np.full(bins_per_day, np.nan)
-    for position in range(bins_per_day):
-        chosen = binned[position::bins_per_day]
-        if np.isfinite(chosen).any():
-            profile[position] = float(np.nanmean(chosen))
-    return profile
-
-
-def _circular_window(profile: np.ndarray, window_bins: int, mode: str) -> tuple[int, float]:
-    """Best or worst run of bins on the folded day, wrapping past the end.
-
-    Circular because the quietest five hours of a day very often straddle
-    midnight, and a window that stopped at the edge would miss them. A window
-    is scored on the bins it has, so a gap narrows it rather than voiding it -
-    ``hours_binned`` is what says how much of the day was measured at all.
-    """
-    scores = np.full(len(profile), np.nan)
-    for start in range(len(profile)):
-        indices = np.mod(np.arange(start, start + window_bins), len(profile))
-        window = profile[indices]
-        if np.isfinite(window).any():
-            scores[start] = float(np.nanmean(window))
-    if not np.isfinite(scores).any():
-        return 0, np.nan
-    index = int(np.nanargmin(scores) if mode == "min" else np.nanargmax(scores))
-    return index, float(scores[index])
-
-
-def _intradaily_variability(binned: np.ndarray) -> float:
-    """How choppy the trace is hour to hour, against how much it varies overall.
-
-    Only pairs where both hours were measured contribute, and the denominator
-    counts those pairs rather than assuming every hour has a predecessor. High
-    means the rhythm is broken into fragments rather than one rise and fall.
-    """
-    valid = binned[np.isfinite(binned)]
-    if len(valid) <= 2:
-        return np.nan
-    adjacent = np.isfinite(binned[1:]) & np.isfinite(binned[:-1])
-    denominator = float(np.sum((valid - np.mean(valid)) ** 2))
-    if denominator <= 0 or not adjacent.any():
-        return np.nan
-    return float(
-        len(valid) * np.sum((binned[1:][adjacent] - binned[:-1][adjacent]) ** 2)
-        / (adjacent.sum() * denominator)
-    )
-
-
-def _interdaily_stability(binned: np.ndarray, bins_per_day: int) -> float:
-    """How much one day resembles the next, from 0 to 1.
-
-    Needs more than one day of measured bins, which is the workbench's guard and
-    the reason a one-day recording returns nothing rather than a number. Two
-    days is one comparison and is barely a measurement either, which is what
-    ``stability_underdetermined`` is for.
-    """
-    valid = binned[np.isfinite(binned)]
-    if len(valid) <= bins_per_day:
-        return np.nan
-    grand = float(np.mean(valid))
-    denominator = float(bins_per_day * np.sum((valid - grand) ** 2))
-    if denominator <= 0:
-        return np.nan
-    profile = _folded_day(binned, bins_per_day)
-    return float(len(valid) * np.nansum((profile - grand) ** 2) / denominator)
-
-
-def _template_scores(thresholded: np.ndarray, off_bins: int, on_bins: int
-                     ) -> tuple[np.ndarray, np.ndarray]:
-    """ClockLab-style circular onset and offset template scores.
-
-    For each candidate bin, how much quiet sits in the window before it and how
-    much activity follows. The best-matching bin is the onset. Both windows wrap
-    circularly, so an onset near the end of the day is found rather than lost at
-    the edge.
-    """
-    count = len(thresholded)
-    onset = np.full(count, np.nan)
-    offset = np.full(count, np.nan)
-    for candidate in range(count):
-        before_off = thresholded[np.mod(np.arange(candidate - off_bins, candidate), count)]
-        after_on = thresholded[np.mod(np.arange(candidate, candidate + on_bins), count)]
-        before_on = thresholded[np.mod(np.arange(candidate - on_bins, candidate), count)]
-        after_off = thresholded[np.mod(np.arange(candidate, candidate + off_bins), count)]
-        onset[candidate] = (np.sum(after_on) - np.sum(before_off)) / (on_bins + off_bins)
-        offset[candidate] = (np.sum(before_on) - np.sum(after_off)) / (on_bins + off_bins)
-    return onset, offset
-
-
-def _template_marker(scores: np.ndarray, bin_hours: float) -> float:
-    """Hour of the best template match, or ``NaN`` when the day carries no phase.
-
-    The guard is the point of this function and it is copied with its reason
-    intact. A day whose bins all fall on the same side of the threshold scores
-    identically everywhere, and ``argmax`` on a flat curve returns bin 0, which
-    reads downstream as a perfectly regular onset at the start of the recording.
-    The workbench shipped that: an all-zero record produced a period of exactly
-    24.0 hours with zero fit error, described in its own comment as "the most
-    convincing-looking result in the app, and entirely fabricated".
-
-    ``nanmax - nanmin`` rather than ``ptp``, because ``ptp`` returns ``NaN`` if
-    any element is ``NaN`` and ``nan <= 0.0`` is ``False``, which would bypass
-    the guard exactly when it is needed.
-    """
-    if not np.isfinite(scores).any():
-        return np.nan
-    if float(np.nanmax(scores) - np.nanmin(scores)) <= 0.0:
-        return np.nan
-    return float(int(np.nanargmax(scores)) * bin_hours)
-
-
-def nonparametric(hours: np.ndarray, values: np.ndarray, params: dict) -> dict:
-    """L5, M10, relative amplitude, onset, offset and the two stability measures.
-
-    One row's worth of the non-parametric readouts, for one cell and one
-    measurement. Interdaily stability and intradaily variability are always
-    computed on hourly bins whatever ``bin_hours`` is, because that is how they
-    are defined and how the workbench computes them; ``bin_hours`` sets the
-    resolution of the folded day that L5, M10 and the onset template are read
-    off.
-    """
-    bin_hours = float(params["bin_hours"])
-    per_day = 24.0 / bin_hours if bin_hours > 0 else 0.0
-    if bin_hours <= 0 or abs(per_day - round(per_day)) > 1e-9:
-        raise ValueError(
-            f"rhythms bin_hours must divide a 24-hour day, and {bin_hours!r} does not. "
-            "A day that does not hold a whole number of bins cannot be folded, and "
-            "rounding it would make interdaily stability subtly wrong rather than absent."
-        )
-    bins_per_day = int(round(per_day))
-
-    hours = np.asarray(hours, dtype=float)
-    hourly = _binned(hours, values, 1.0)
-    binned = hourly if bin_hours == 1.0 else _binned(hours, values, bin_hours)
-    profile = _folded_day(binned, bins_per_day)
-
-    low_bins = max(1, int(round(float(params["low_window_hours"]) / bin_hours)))
-    high_bins = max(1, int(round(float(params["high_window_hours"]) / bin_hours)))
-    l5_index, l5 = _circular_window(profile, low_bins, "min")
-    m10_index, m10 = _circular_window(profile, high_bins, "max")
-    total = m10 + l5
-    amplitude = (m10 - l5) / total if np.isfinite(total) and total != 0 else np.nan
-
-    # The threshold is taken over the whole record rather than over the folded
-    # day, which is the workbench's choice: a stretch is called active relative
-    # to the recording it sits in, not relative to itself.
-    measured = binned[np.isfinite(binned)]
-    threshold = (float(np.percentile(measured, 100.0 - float(params["onset_threshold_percent"])))
-                 if measured.size else np.nan)
-    thresholded = np.where(np.isfinite(profile) & (profile >= threshold), 1.0, -1.0)
-    off_bins = max(1, int(round(float(params["onset_off_hours"]) / bin_hours)))
-    on_bins = max(1, int(round(float(params["onset_on_hours"]) / bin_hours)))
-    onset_scores, offset_scores = _template_scores(thresholded, off_bins, on_bins)
-    onset = _template_marker(onset_scores, bin_hours)
-    offset = _template_marker(offset_scores, bin_hours)
-
-    span = float(hours.max() - hours.min()) if len(hours) else np.nan
-    days = span / 24.0
-    duration = (offset - onset) % 24.0 if np.isfinite(onset) and np.isfinite(offset) else np.nan
-    return {
-        "m10": m10,
-        "m10_onset_hour": m10_index * bin_hours,
-        "l5": l5,
-        "l5_onset_hour": l5_index * bin_hours,
-        "relative_amplitude": amplitude,
-        "onset_hour": onset,
-        "offset_hour": offset,
-        "active_duration_hours": duration,
-        "interdaily_stability": _interdaily_stability(hourly, 24),
-        "intradaily_variability": _intradaily_variability(hourly),
-        "days_covered": days,
-        "hours_binned": int(np.isfinite(hourly).sum()),
-        "stability_underdetermined": days < float(params["min_days_for_stability"]),
-        "onset_found": bool(np.isfinite(onset)),
-    }
+DAILY_PROFILE_DEFAULTS = {
+    "m10": np.nan,
+    "m10_onset_hour": np.nan,
+    "l5": np.nan,
+    "l5_onset_hour": np.nan,
+    "relative_amplitude": np.nan,
+    "onset_hour": np.nan,
+    "offset_hour": np.nan,
+    "active_duration_hours": np.nan,
+    "interdaily_stability": np.nan,
+    "intradaily_variability": np.nan,
+    "days_covered": np.nan,
+    "hours_binned": np.nan,
+    "stability_underdetermined": None,
+    "onset_found": None,
+}
 
 
 #: Three tables. The wide one is long by metric, not wide by metric - one row
@@ -482,8 +153,8 @@ def nonparametric(hours: np.ndarray, values: np.ndarray, params: dict) -> dict:
 #:
 #: Two prefixes carry the whole argument of the module and the labels have to
 #: keep them apart. ``cosinor_`` is the fit at the period the analysis was told
-#: to assume, usually 24 h; ``free_cosinor_`` is the fit at the period
-#: Lomb-Scargle actually found. Quoting one while meaning the other is the
+#: to assume, usually 24 h; ``free_cosinor_`` is the fit at the period the
+#: selected estimator found. Quoting one while meaning the other is the
 #: easiest mistake to make with this table, which is why no label here says
 #: "amplitude" without saying which fit it came from.
 #:
@@ -495,7 +166,8 @@ def nonparametric(hours: np.ndarray, values: np.ndarray, params: dict) -> dict:
 #:                                  the field means by the term, and no fit involved.
 #: ``cosinor_relative_amplitude``   fitted amplitude over the mean, at the period the
 #:                                  fit was told to assume.
-#: ``free_cosinor_relative_amplitude``  the same ratio at the period the search found.
+#: ``free_cosinor_relative_amplitude``  the same ratio at the period the selected
+#:                                     estimator found.
 #: ===============================  ==================================================
 #:
 #: The labels have to keep them apart on an axis as well as in this schema, so
@@ -508,11 +180,31 @@ PRODUCES = (
     Column("cycles_covered", "Cycles the recording covers at the assumed period", "count", "reference"),
     Column("mean_level", "Mean of the trace before detrending", "", "reference"),
     Column("detrend", "How the trend was removed", "name", "reference"),
+    Column("detrend_window_hours", "Baseline window used for detrending", "h", "reference"),
+    Column("detrended_z", "Detrended trace scaled by its own standard deviation", "SD", "rhythmic"),
+    Column("workbench_version", "Circadian Workbench version", "version", "reference"),
+    Column("primary_rhythm_test", "Test used for the overall rhythm verdict", "method", "reference"),
+    Column("period_estimation_method", "Method used to estimate period and phase", "method", "reference"),
+    Column("rhythm_status", "Overall rhythmic, arrhythmic or unknown verdict", "status", "rhythmic"),
+    Column("rhythmic", "Called rhythmic by the primary test", "0 or 1", "rhythmic"),
+    Column("best_method_label", "Display name of the selected period estimator", "name", "reference"),
+    Column("best_period_hours", "Best period from the selected estimator", "h", "rhythmic"),
+    Column("best_period_error_hours", "Uncertainty on the selected period estimate", "h", "reference"),
+    Column("best_p_value", "Significance from the primary rhythm test", "p", "significant"),
+    Column("best_alpha", "Significance threshold of the primary rhythm test", "p", "reference"),
+    Column("best_goodness_of_fit", "Fit strength reported by the selected estimator", "", "fit"),
+    Column("best_phase_hours", "Peak phase from the selected period estimator", "h from start", "rhythmic"),
+    Column("best_phase_fraction", "Peak position within the detected period", "0-1 cycle", "rhythmic"),
+    Column("best_period_class", "Detected period band: ultradian, circadian-like or infradian", "class", "reference"),
+    Column("best_period_at_search_edge", "Detected period touches a configured search boundary", "0 or 1", "invalid"),
+    Column("cycles_covered_at_best_period", "Cycles covered at the selected period", "count", "reference"),
+    Column("daily_profile_measures_enabled", "Whether fixed 24-hour profile measures were requested", "0 or 1", "reference"),
     Column("fixed_period_hours", "Period the fit was told to assume", "h", "reference"),
     Column("cosinor_mesor", "Fitted mean at the assumed period", "", "rhythmic"),
     Column("cosinor_amplitude", "Fitted amplitude at the assumed period", "", "rhythmic"),
     Column("cosinor_relative_amplitude", "Fitted amplitude over the mean, assumed period", "ratio", "rhythmic"),
     Column("cosinor_peak_hour", "Time of day the fit peaks, assumed period", "h", "rhythmic"),
+    Column("cosinor_phase_convention", "Convention used to encode the fitted peak time", "convention", "reference"),
     Column("cosinor_r_squared", "Variation the assumed-period fit explains", "fraction", "fit"),
     Column("cosinor_p_value", "Chance of the assumed-period fit from noise", "p", "significant"),
     Column("cosinor_relative_amplitude_error", "Uncertainty on the relative amplitude", "ratio", "reference"),
@@ -523,6 +215,7 @@ PRODUCES = (
     Column("free_cosinor_amplitude", "Fitted amplitude at the found period", "", "rhythmic"),
     Column("free_cosinor_relative_amplitude", "Fitted amplitude over the mean, found period", "ratio", "rhythmic"),
     Column("free_cosinor_peak_hour", "Time of day the fit peaks, found period", "h", "rhythmic"),
+    Column("free_cosinor_phase_convention", "Convention used to encode the found-period peak time", "convention", "reference"),
     Column("free_cosinor_r_squared", "Variation the found-period fit explains", "fraction", "fit"),
     Column("free_cosinor_p_value", "Chance of the found-period fit from noise", "p", "significant"),
     Column("free_cosinor_relative_amplitude_error", "Uncertainty on the found-period relative amplitude", "ratio", "reference"),
@@ -531,6 +224,28 @@ PRODUCES = (
     Column("rhythmic_lombscargle", "Called rhythmic by Lomb-Scargle", "0 or 1", "rhythmic"),
     Column("rhythmic_both", "Called rhythmic by both tests", "0 or 1", "rhythmic"),
     Column("period_underdetermined", "Too few cycles to pin the period", "0 or 1", "invalid"),
+    # rhythm_methods - one row per cell, measurement and configured method.
+    Column("method", "Circadian Workbench period or rhythm method", "method", "reference"),
+    Column("method_label", "Published method name", "name", "reference"),
+    Column("is_significance_test", "Whether this method can make a rhythm verdict", "0 or 1", "reference"),
+    Column("method_rhythm_status", "This method's rhythmic, arrhythmic or unknown verdict", "status", "rhythmic"),
+    Column("method_rhythmic", "Called rhythmic by this method", "0 or 1", "rhythmic"),
+    Column("primary", "Whether this method supplies the overall verdict", "0 or 1", "reference"),
+    Column("period_estimator", "Whether this method supplies period and phase", "0 or 1", "reference"),
+    Column("alpha", "Significance threshold used by this method", "p", "reference"),
+    Column("period_hours", "Period estimated by this method", "h", "rhythmic"),
+    Column("period_error_hours", "Uncertainty on this method's period", "h", "reference"),
+    Column("phase_hours", "Peak phase estimated by this method", "h from start", "rhythmic"),
+    Column("phase_error_hours", "Uncertainty on this method's phase", "h", "reference"),
+    Column("amplitude", "Amplitude estimated by this method", "", "rhythmic"),
+    Column("amplitude_error", "Uncertainty on this method's amplitude", "", "reference"),
+    Column("rae", "Relative amplitude error from this method", "ratio", "reference"),
+    Column("goodness_of_fit", "Fit or periodogram strength reported by this method", "", "fit"),
+    Column("p_value", "Significance reported by this method", "p", "significant"),
+    Column("significant", "Circadian Workbench significance verdict", "0 or 1", "rhythmic"),
+    Column("status", "Whether this method returned an estimate", "status", "reference"),
+    Column("phase_reference", "Origin used for phase", "name", "reference"),
+    Column("phase_units", "Units used for phase", "name", "reference"),
     # The non-parametric block, on the same row as the fits it sits beside.
     #
     # Every hour here is hours *since the recording started*, not a time of day,
@@ -558,7 +273,9 @@ PRODUCES = (
     Column("population", "Which group of cells", "name", "reference"),
     Column("cells", "Cells in the group", "count", "reference"),
     Column("vector_length", "How tightly the peaks agree", "0-1", "rhythmic"),
-    Column("mean_peak_hour", "Time of day the group peaks", "h", "rhythmic"),
+    Column("mean_peak_hour", "Mean peak fraction expressed at the group's median selected period", "h", "rhythmic"),
+    Column("mean_peak_fraction", "Circular mean peak position within each selected cycle", "0-1 cycle", "rhythmic"),
+    Column("phase_reference_period_hours", "Median selected period used to express the mean peak in hours", "h", "reference"),
     Column("rayleigh_p_value", "Chance of that agreement from scattered peaks", "p", "significant"),
     # rhythms_null - one row per measurement
     Column("surrogates", "Noise traces tested per cell", "count", "reference"),
@@ -570,6 +287,10 @@ PRODUCES = (
     Column("observed_rate_cosinor", "Real cells the cosinor test called rhythmic", "fraction", "rhythmic"),
     Column("observed_rate_both", "Real cells both tests called rhythmic", "fraction", "rhythmic"),
     Column("excess_over_null_both", "How far the real rate beats matched noise", "fraction", "significant"),
+    Column("primary_method", "Rhythm test used for the null comparison", "method", "reference"),
+    Column("false_positive_rate_primary", "Surrogates called rhythmic by the primary test", "fraction", "arrhythmic"),
+    Column("observed_rate_primary", "Real cells called rhythmic by the primary test", "fraction", "rhythmic"),
+    Column("excess_over_null_primary", "How far the primary-test rate beats matched noise", "fraction", "significant"),
 )
 
 
@@ -577,6 +298,8 @@ PRODUCES = (
 #: was something to summarise: no cell fitted, no population row.
 WRITES = (
     Output("rhythms",            grain=("identity", "metric")),
+    Output("rhythm_methods",     grain=("identity", "metric", "method")),
+    Output("rhythm_traces",      grain=("identity", "metric", "hours")),
     Output("rhythms_population", grain=("metric", "population"), optional=True),
     Output("rhythms_null",       grain=("metric",),              optional=True),
 )
@@ -584,7 +307,7 @@ WRITES = (
 
 @register_derived(
     name="rhythms",
-    description="Cosinor and Lomb-Scargle rhythm fits per cell, per measurement",
+    description="Circadian Workbench rhythm tests and period estimates per cell and measurement",
     needs_columns=("identity", "frame_index", "hours"),
     defaults=DEFAULTS,
     produces=PRODUCES,
@@ -592,34 +315,147 @@ WRITES = (
 )
 def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, pd.DataFrame]:
     params = {**DEFAULTS, **context.module_params("rhythms")}
-    low, high = params["period_search_hours"]
-    periods = np.arange(float(low), float(high) + 1e-9, float(params["period_step_hours"]))
     metrics = [m for m in params["metrics"] if m in cell_frame.columns]
     fixed_period = float(params["fixed_period_hours"])
     min_observations = int(params["min_observations"])
+    primary_method = str(params["primary_rhythm_test"])
+    estimator_method = str(params.get("period_estimation_method", primary_method))
+    configured_methods = list(params["period_methods"])
+    for required_method in (estimator_method, primary_method):
+        if required_method not in configured_methods:
+            configured_methods.append(required_method)
+    params["period_methods"] = configured_methods
+    minimum_cycles = float(params["min_cycles_for_confident_period"])
+    search_low, search_high = map(float, params["period_search_hours"])
+    circadian_low, circadian_high = map(float, params["circadian_band_hours"])
+    if not search_low < search_high:
+        raise ValueError("period_search_hours needs a lower value than a higher value")
+    if not circadian_low < circadian_high:
+        raise ValueError("circadian_band_hours needs a lower value than a higher value")
 
     generator = np.random.default_rng(int(params["null_seed"]))
     surrogates_per_cell = int(params["null_surrogates_per_cell"])
     alpha_for_null = float(params["rhythmic_alpha"])
+    descriptive_cosinor = bool(params.get("descriptive_cosinor", False))
+    daily_profile_measures = bool(params.get("daily_profile_measures", False))
 
     rows: list[dict] = []
+    method_rows: list[dict] = []
+    trace_rows: list[dict] = []
     null_rows: list[dict] = []
     for metric in metrics:
         for identity, group in cell_frame.groupby("identity", sort=True):
-            usable = group[["hours", metric]].dropna()
+            usable = group[["hours", metric]].dropna().sort_values("hours")
             if len(usable) < min_observations:
                 continue
             hours = usable["hours"].to_numpy(float)
             values = usable[metric].to_numpy(float)
             if np.allclose(values, values[0]):
                 continue
-            detrended = _detrend(hours, values, params["detrend"])
             span = float(hours.max() - hours.min())
 
+            analysed = workbench.estimate_trace(hours, values, params)
+            evidence = analysed["rows"]
+            by_method = {entry["method"]: entry for entry in evidence}
+            primary = by_method[primary_method]
+            estimate = by_method[estimator_method]
+            best_period = estimate.get("period_hours")
+            best_period = (float(best_period) if best_period is not None and
+                           np.isfinite(best_period) else np.nan)
+            best_p = primary.get("p_value")
+            best_p = (float(best_p) if best_p is not None and
+                      np.isfinite(best_p) else np.nan)
+            best_error = estimate.get("period_error_hours")
+            best_error = (float(best_error) if best_error is not None and
+                          np.isfinite(best_error) else np.nan)
+            best_phase = estimate.get("phase_hours")
+            best_phase = (float(best_phase) if best_phase is not None and
+                          np.isfinite(best_phase) else np.nan)
+            best_phase_fraction = (
+                float((best_phase % best_period) / best_period)
+                if np.isfinite(best_phase) and np.isfinite(best_period)
+                and best_period > 0 else np.nan
+            )
+            best_period_class = (
+                "unknown" if not np.isfinite(best_period)
+                else "ultradian" if best_period < circadian_low
+                else "circadian-like" if best_period <= circadian_high
+                else "infradian"
+            )
+            edge_tolerance = max(0.1, 0.005 * (search_high - search_low))
+            best_period_at_search_edge = bool(
+                np.isfinite(best_period)
+                and (best_period <= search_low + edge_tolerance
+                     or best_period >= search_high - edge_tolerance)
+            )
+            cycles_at_best = span / best_period if np.isfinite(best_period) else np.nan
+            best_goodness = estimate.get("goodness_of_fit")
+            best_goodness = (
+                float(best_goodness) if best_goodness is not None and
+                np.isfinite(best_goodness) else np.nan)
+
+            for entry in evidence:
+                method_entry = dict(entry)
+                method_rhythmic = method_entry.pop("rhythmic")
+                method_rhythm_status = method_entry.pop("rhythm_status")
+                method_period = entry.get("period_hours")
+                method_period = (
+                    float(method_period) if method_period is not None and
+                    np.isfinite(method_period) else np.nan)
+                method_rows.append({
+                    "identity": int(identity),
+                    "metric": metric,
+                    "observations": int(len(usable)),
+                    "span_hours": span,
+                    "cycles_covered": (span / method_period
+                                       if np.isfinite(method_period) else np.nan),
+                    "period_underdetermined": (
+                        not np.isfinite(method_period) or
+                        span / method_period < minimum_cycles),
+                    "method_rhythmic": method_rhythmic,
+                    "method_rhythm_status": method_rhythm_status,
+                    "period_estimator": entry["method"] == estimator_method,
+                    **method_entry,
+                })
+
+            detrend_result = workbench.detrend_trace(hours, values, params)
+            detrended = np.asarray(detrend_result["values"], dtype=float)
+            detrended_z = workbench.scale_detrended(detrended, values)
+            finite = np.isfinite(detrended)
+            fitted_hours = hours[finite]
+            fitted_values = detrended[finite]
+            detrend_name = str(detrend_result["method"])
+            trace_rows.extend(
+                {
+                    "identity": int(identity),
+                    "metric": metric,
+                    "hours": float(hour),
+                    "detrended_z": float(scaled),
+                    "detrend": detrend_name,
+                    "detrend_window_hours": float(params["detrend_window_hours"]),
+                    "workbench_version": workbench.WORKBENCH_VERSION,
+                }
+                for hour, scaled in zip(hours, detrended_z)
+                if np.isfinite(scaled)
+            )
+
             for replicate in range(surrogates_per_cell):
-                fake = _surrogate(detrended, params["null_model"], generator)
-                null_fit = {**cosinor(hours, fake, fixed_period), **lomb_scargle(hours, fake, periods)}
-                if not null_fit:
+                if len(fitted_values) < min_observations:
+                    break
+                fake = _surrogate(fitted_values, params["null_model"], generator)
+                primary_null = workbench.estimate_one(
+                    fitted_hours, fake, params, primary_method, detrend="none")
+                lomb_null = (
+                    primary_null if primary_method == "lomb"
+                    else workbench.estimate_one(
+                        fitted_hours, fake, params, "lomb", detrend="none"
+                    ) if "lomb" in configured_methods else {}
+                )
+                null_cosinor = (
+                    cosinor(fitted_hours, fake, fixed_period)
+                    if descriptive_cosinor else {}
+                )
+                if primary_null.get("status") != "ok":
                     continue
                 null_rows.append(
                     {
@@ -627,9 +463,12 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                         "identity": int(identity),
                         "replicate": replicate,
                         "null_model": params["null_model"],
-                        "cosinor_p_value": null_fit.get("cosinor_p_value", np.nan),
-                        "lombscargle_false_alarm": null_fit.get("lombscargle_false_alarm", np.nan),
-                        "lombscargle_period_hours": null_fit.get("lombscargle_period_hours", np.nan),
+                        "primary_method": primary_method,
+                        "primary_p_value": primary_null.get("p_value", np.nan),
+                        "rhythmic_primary": primary_null.get("rhythmic"),
+                        "cosinor_p_value": null_cosinor.get("cosinor_p_value", np.nan),
+                        "lombscargle_false_alarm": lomb_null.get("p_value", np.nan),
+                        "lombscargle_period_hours": lomb_null.get("period_hours", np.nan),
                     }
                 )
 
@@ -638,59 +477,149 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                 "metric": metric,
                 "observations": int(len(usable)),
                 "span_hours": span,
-                "cycles_covered": span / fixed_period,
+                "cycles_covered": (
+                    span / fixed_period
+                    if descriptive_cosinor or daily_profile_measures else np.nan
+                ),
                 "mean_level": float(values.mean()),
-                "detrend": params["detrend"],
-                "fixed_period_hours": fixed_period,
+                "detrend": detrend_name,
+                "detrend_window_hours": float(params["detrend_window_hours"]),
+                "workbench_version": workbench.WORKBENCH_VERSION,
+                "primary_rhythm_test": primary_method,
+                "period_estimation_method": estimator_method,
+                "rhythm_status": primary["rhythm_status"],
+                "rhythmic": primary["rhythmic"],
+                "best_method_label": estimate["method_label"],
+                "best_period_hours": best_period,
+                "best_period_error_hours": best_error,
+                "best_p_value": best_p,
+                "best_alpha": float(primary["alpha"]),
+                "best_goodness_of_fit": best_goodness,
+                "best_phase_hours": best_phase,
+                "best_phase_fraction": best_phase_fraction,
+                "best_period_class": best_period_class,
+                "best_period_at_search_edge": best_period_at_search_edge,
+                "cycles_covered_at_best_period": cycles_at_best,
+                "daily_profile_measures_enabled": daily_profile_measures,
+                "fixed_period_hours": (
+                    fixed_period
+                    if descriptive_cosinor or daily_profile_measures else np.nan
+                ),
+                **DAILY_PROFILE_DEFAULTS,
             }
             reference = float(np.mean(np.abs(values)))
-            # On the trace itself, not the detrended one: L5 and M10 are levels
-            # and their ratio is the whole measure, so removing the trend first
-            # would divide two numbers straddling zero.
-            row.update(nonparametric(hours, values, params))
-            row.update(cosinor(hours, detrended, fixed_period, reference))
-            row.update(lomb_scargle(hours, detrended, periods))
-            if "lombscargle_period_hours" in row:
+            if daily_profile_measures:
+                # On the measured trace because L5 and M10 are level summaries.
+                row.update(nonparametric(hours, values, params))
+            if descriptive_cosinor:
+                row.update(cosinor(
+                    fitted_hours, fitted_values, fixed_period, reference
+                ))
+            lomb = by_method.get("lomb")
+            if lomb is not None:
+                row.update({
+                    "lombscargle_period_hours": lomb.get("period_hours", np.nan),
+                    "lombscargle_power": lomb.get("goodness_of_fit", np.nan),
+                    "lombscargle_false_alarm": lomb.get("p_value", np.nan),
+                })
+            if descriptive_cosinor and np.isfinite(best_period):
                 row.update(
                     {
                         f"free_{key}": value
                         for key, value in cosinor(
-                            hours, detrended, row["lombscargle_period_hours"], reference
+                            fitted_hours, fitted_values, best_period, reference
                         ).items()
                     }
                 )
-                row["cycles_covered_at_free_period"] = span / row["lombscargle_period_hours"]
+                row["cycles_covered_at_free_period"] = cycles_at_best
+            cosinor_p = row.get("cosinor_p_value", np.nan)
+            row["rhythmic_cosinor"] = (
+                bool(cosinor_p < alpha_for_null) if np.isfinite(cosinor_p) else None
+            )
+            row["rhythmic_lombscargle"] = (
+                bool(lomb.get("rhythmic"))
+                if lomb is not None and lomb.get("rhythmic") is not None else None
+            )
+            # Compatibility only. No current result uses this pair as the
+            # overall verdict; ``rhythmic`` is the selected workbench test.
+            row["rhythmic_both"] = (
+                bool(row["rhythmic_cosinor"] and row["rhythmic_lombscargle"])
+                if row["rhythmic_cosinor"] is not None
+                and row["rhythmic_lombscargle"] is not None else None
+            )
+            row["period_underdetermined"] = (
+                not np.isfinite(cycles_at_best) or cycles_at_best < minimum_cycles)
             rows.append(row)
 
     table = pd.DataFrame(rows)
     if table.empty:
-        return {"rhythms": table}
-
-    alpha = float(params["rhythmic_alpha"])
-    minimum_cycles = float(params["min_cycles_for_confident_period"])
-    table["rhythmic_cosinor"] = table["cosinor_p_value"] < alpha
-    table["rhythmic_lombscargle"] = table.get("lombscargle_false_alarm", 1.0) < alpha
-    table["rhythmic_both"] = table["rhythmic_cosinor"] & table["rhythmic_lombscargle"]
-    table["period_underdetermined"] = table["cycles_covered"] < minimum_cycles
+        return {
+            "rhythms": table,
+            "rhythm_methods": pd.DataFrame(method_rows),
+            "rhythm_traces": pd.DataFrame(trace_rows),
+        }
 
     population_rows: list[dict] = []
     for metric, group in table.groupby("metric"):
+        rhythmic_group = group[group["rhythmic"].fillna(False).astype(bool)]
         for label, subset in (
             ("all_tested", group),
-            ("rhythmic_by_both_tests", group[group["rhythmic_both"]]),
+            ("rhythmic_by_primary_test", rhythmic_group),
+            ("rhythmic_by_both_tests", group[
+                group["rhythmic_both"].map(
+                    lambda value: bool(value) if pd.notna(value) else False
+                )
+            ]),
         ):
-            result = rayleigh(subset["cosinor_peak_hour"].to_numpy(), fixed_period)
+            phase_fraction = pd.to_numeric(
+                subset["best_phase_fraction"], errors="coerce"
+            ).to_numpy(float)
+            result = rayleigh(phase_fraction, 1.0)
             if result:
-                population_rows.append({"metric": metric, "population": label, **result})
+                mean_fraction = result.pop("mean_peak_hour")
+                reference_period = float(pd.to_numeric(
+                    subset["best_period_hours"], errors="coerce"
+                ).median())
+                population_rows.append({
+                    "metric": metric,
+                    "population": label,
+                    **result,
+                    "mean_peak_fraction": mean_fraction,
+                    "phase_reference_period_hours": reference_period,
+                    "mean_peak_hour": mean_fraction * reference_period,
+                    "period_estimation_method": estimator_method,
+                })
 
-    output = {"rhythms": table}
+    output = {
+        "rhythms": table,
+        "rhythm_methods": pd.DataFrame(method_rows),
+        "rhythm_traces": pd.DataFrame(trace_rows),
+    }
     if population_rows:
         output["rhythms_population"] = pd.DataFrame(population_rows)
     if null_rows:
         null = pd.DataFrame(null_rows)
-        null["rhythmic_cosinor"] = null["cosinor_p_value"] < alpha_for_null
-        null["rhythmic_lombscargle"] = null["lombscargle_false_alarm"] < alpha_for_null
-        null["rhythmic_both"] = null["rhythmic_cosinor"] & null["rhythmic_lombscargle"]
+        null["rhythmic_cosinor"] = np.where(
+            np.isfinite(null["cosinor_p_value"]),
+            null["cosinor_p_value"] < alpha_for_null, np.nan,
+        )
+        null["rhythmic_lombscargle"] = np.where(
+            np.isfinite(null["lombscargle_false_alarm"]),
+            null["lombscargle_false_alarm"] < alpha_for_null, np.nan,
+        )
+        valid_pair = (
+            null["rhythmic_cosinor"].notna()
+            & null["rhythmic_lombscargle"].notna()
+        )
+        cosinor_passed = null["rhythmic_cosinor"].map(
+            lambda value: bool(value) if pd.notna(value) else False
+        )
+        lomb_passed = null["rhythmic_lombscargle"].map(
+            lambda value: bool(value) if pd.notna(value) else False
+        )
+        null["rhythmic_both"] = np.where(
+            valid_pair, cosinor_passed & lomb_passed, np.nan,
+        )
         summary = (
             null.groupby("metric")
             .agg(
@@ -698,16 +627,19 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                 false_positive_rate_cosinor=("rhythmic_cosinor", "mean"),
                 false_positive_rate_lombscargle=("rhythmic_lombscargle", "mean"),
                 false_positive_rate_both=("rhythmic_both", "mean"),
+                false_positive_rate_primary=("rhythmic_primary", "mean"),
             )
             .reset_index()
         )
         summary["null_model"] = params["null_model"]
+        summary["primary_method"] = primary_method
         observed = (
             table.groupby("metric")
             .agg(
                 cells_tested=("identity", "size"),
                 observed_rate_cosinor=("rhythmic_cosinor", "mean"),
                 observed_rate_both=("rhythmic_both", "mean"),
+                observed_rate_primary=("rhythmic", "mean"),
             )
             .reset_index()
         )
@@ -716,6 +648,10 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
         # called rhythmic than matched noise with the same drift and smoothness.
         summary["excess_over_null_both"] = (
             summary["observed_rate_both"] - summary["false_positive_rate_both"]
+        )
+        summary["excess_over_null_primary"] = (
+            summary["observed_rate_primary"]
+            - summary["false_positive_rate_primary"]
         )
         output["rhythms_null"] = summary
     return output

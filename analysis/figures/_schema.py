@@ -28,7 +28,7 @@ this number" and "which file draws it" already have one answer; this gives
         run_figure("step-size-distribution")
 
 The builder returns a result; it does not save, write a README, place a title or
-close a figure. Those are the same for all thirty-six pages and are done once,
+close a figure. Those are the same for every page and are done once,
 in ``_finish``.
 
 A figure's **slug** and its **filename** are allowed to differ. The slug is what
@@ -52,15 +52,20 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import tifffile  # noqa: E402
 
-from _bundle import (bundle_for, field_for, inputs_for, make_bundle, module_params,  # noqa: E402
+from _builders import builder_files  # noqa: E402
+from _bundle import (any_movie, bundle_for, field_for, flat, inputs_for,  # noqa: E402
+                     make_bundle,
+                     module_params,
                      provenance_note,
-                     provenance_table, require_table, run_folder,
+                     provenance_table, require_run_table, require_table, run_folder,
                      save_reprofig_figure, stack_for, summary_for, tables_for,
-                     theme_for, units_note, wrap_title, write_readme,
+                     theme_for, units_note, wrap_footnote, wrap_title, write_readme,
                      write_standalone_producer)
-from _options import (OPTIONS, PLACEMENTS, SWITCHES, Length, Vocabulary,  # noqa: E402
-                      as_length, commas, length, option, raw_flag, skip_tokens)
-from _text import OPTIONS_KEY, SLOTS, _from_run, figure_text  # noqa: E402
+from _options import (OPTIONS, PLACEMENTS, SELECTION, SWITCHES, Length,  # noqa: E402
+                      Vocabulary, as_length, commas, length, option, raw_flag,
+                      skip_tokens)
+from _text import (OPTIONS_KEY, SLOTS, _from_run, figure_text,  # noqa: E402
+                   item_settings)
 from analysis.theme import parse_hours_per_tick  # noqa: E402
 from analysis.units import Scale  # noqa: E402
 from panels import common  # noqa: E402
@@ -76,10 +81,12 @@ HERE = Path(__file__).resolve().parent
 #: which figure is being drawn, or about the sheet, rather than about what it
 #: draws. ``stem`` picks the movie in a run that holds several; ``panels`` names
 #: the parts of a page to keep, and is checked against the figure's own panel
-#: list rather than against this one. The four in ``PLACEMENTS`` move the words
+#: list rather than against this one; ``item`` says which entry of the run's
+#: plot plan this drawing is, and like ``stem`` it decides where the build
+#: writes rather than what it draws. The four in ``PLACEMENTS`` move the words
 #: on the page and are read by ``_finish``, not by any builder, which is why
 #: no figure declares them and every figure honours them.
-UNIVERSAL: tuple[str, ...] = ("stem", "panels", *PLACEMENTS)
+UNIVERSAL: tuple[str, ...] = (*SELECTION, *PLACEMENTS)
 
 #: The one switch every figure honours. The others change what a particular page
 #: draws and are declared on it, the same as an option: ``--overlay`` on a figure
@@ -144,18 +151,36 @@ class Option:
 
 @dataclass(frozen=True)
 class Table:
-    """A CSV under ``<run>/<stem>/tables`` this figure reads.
+    """A CSV this figure reads.
 
     ``module`` is not decoration. A missing table is almost never a lost file -
     the module that writes it was switched off, or skipped because the movie
     lacks an input - and naming it turns a pandas traceback into one sentence a
     user can act on.
+
+    ``scope`` says whose table it is. ``"movie"`` is the default and means
+    ``<run>/<stem>/tables``, which is what almost every table is: one movie
+    measured on its own. ``"run"`` means the file belongs to the run rather
+    than to any one movie, because it was made by comparing them -
+    ``statistics.csv`` at the run root, and anything under ``pooled/``.
+
+    The distinction is not cosmetic. A run-level table found under a stem would
+    be one movie claiming to have written about all of them, and a movie-level
+    table found at the run root would draw the pooled stack of every movie on a
+    page whose title says one.
     """
 
     name: str
     module: str
     #: Missing: skip whatever needs it, rather than stop the build.
     optional: bool = False
+    #: ``"movie"`` (under the stem) or ``"run"`` (the run root, or ``pooled/``).
+    scope: str = "movie"
+
+    def __post_init__(self) -> None:
+        if self.scope not in ("movie", "run"):
+            raise ValueError(
+                f"{self.name}: scope must be 'movie' or 'run', not {self.scope!r}")
 
 
 @dataclass(frozen=True)
@@ -212,6 +237,17 @@ class Panel:
     #: its own marginal axes cannot be given one rectangle to draw in.
     block: bool = False
     polar: bool = False
+    #: Minimum drawing area, in the same nominal inches as ``Theme.canvas``.
+    #: A composite page may give a panel more room, but never less: composing
+    #: panels grows the sheet instead of miniaturising the individual plots.
+    min_width_inches: float = 11.0
+    min_height_inches: float = 5.0
+    #: For a panel that is itself a grid of plots. When set, both dimensions
+    #: describe one item; ``grid_minimum`` turns the requested item count into
+    #: the panel's minimum size without reducing an item to fit.
+    item_width_inches: float | None = None
+    item_height_inches: float | None = None
+    item_gap_inches: float = 0.25
     #: ``Table``/``Stack``/``Input`` names without which this panel is skipped,
     #: and the skip is reported, rather than drawn empty. A name may narrow to
     #: one column - ``presence_frame.csv:unclaimed_px`` - for a panel that needs
@@ -220,8 +256,49 @@ class Panel:
     #: which run this is.
     needs: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        sizes = (float(self.min_width_inches), float(self.min_height_inches))
+        if not all(np.isfinite(value) and value > 0 for value in sizes):
+            raise ValueError(
+                f"{self.key}: panel width and height must be finite positive "
+                f"inches, got {sizes}"
+            )
+        item_sizes = (self.item_width_inches, self.item_height_inches)
+        if (item_sizes[0] is None) != (item_sizes[1] is None):
+            raise ValueError(
+                f"{self.key}: item width and height must be set together"
+            )
+        if item_sizes[0] is not None:
+            numeric = (float(item_sizes[0]), float(item_sizes[1]),
+                       float(self.item_gap_inches))
+            if (not all(np.isfinite(value) for value in numeric)
+                    or numeric[0] <= 0 or numeric[1] <= 0 or numeric[2] < 0):
+                raise ValueError(
+                    f"{self.key}: item dimensions must be positive and its gap "
+                    f"must be non-negative, got {numeric}"
+                )
+
     def heading(self) -> str:
         return self.title or self.key.replace("_", " ").capitalize()
+
+    def grid_minimum(self, count: int, columns: int) -> tuple[float, float]:
+        """Minimum panel area for ``count`` full-sized items in a grid."""
+        if self.item_width_inches is None or self.item_height_inches is None:
+            raise ValueError(f"{self.key}: no per-item plot size is declared")
+        if count < 0 or columns <= 0:
+            raise ValueError(
+                f"{self.key}: grid count must be non-negative and columns positive"
+            )
+        if count == 0:
+            return float(self.min_width_inches), float(self.min_height_inches)
+        used_columns = min(int(columns), int(count))
+        rows = int(np.ceil(count / used_columns))
+        width = (used_columns * float(self.item_width_inches)
+                 + (used_columns - 1) * float(self.item_gap_inches))
+        height = (rows * float(self.item_height_inches)
+                  + (rows - 1) * float(self.item_gap_inches))
+        return max(float(self.min_width_inches), width), max(
+            float(self.min_height_inches), height)
 
 
 class PanelList(list):
@@ -260,6 +337,27 @@ class FigureSpec:
     #: docstring, or of the module's.
     summary: str = ""
     source: Path | None = None
+    #: ``result`` carries a scientific finding; ``review`` checks input,
+    #: segmentation or tracking quality without presenting a finding itself.
+    purpose: str = "result"
+
+    def __post_init__(self) -> None:
+        if self.purpose not in ("result", "review"):
+            raise ValueError(
+                f"{self.slug}: purpose must be 'result' or 'review', not "
+                f"{self.purpose!r}")
+
+    @property
+    def run_level(self) -> bool:
+        """Whether this page belongs to the run rather than to one movie.
+
+        True when every source it declares is run-scoped. Such a page must not
+        ask for a ``--stem``: it reads ``statistics.csv`` or a pooled table,
+        neither of which any one movie wrote, and demanding a stem would make
+        the answer look like it came from whichever movie was named.
+        """
+        return bool(self.reads) and all(
+            getattr(source, "scope", "movie") == "run" for source in self.reads)
 
     def option(self, name: str) -> Option:
         for declared in self.options:
@@ -288,7 +386,11 @@ class FigureSpec:
     def command(self) -> str:
         if self.source is None:
             return f"python analysis/figures/{self.slug}.py"
-        return f"python analysis/figures/{self.source.name}"
+        try:
+            relative = self.source.resolve().relative_to(HERE).as_posix()
+        except ValueError:
+            relative = self.source.name
+        return f"python analysis/figures/{relative}"
 
     def usage(self) -> str:
         """This figure's ``--help``: what it draws, reads and accepts.
@@ -300,6 +402,7 @@ class FigureSpec:
         """
         lines = [f"usage: {self.command()} <run> [options]", ""]
         lines.append(f"figure {self.number}   {self.slug}")
+        lines.append(f"  purpose: {self.purpose}")
         if self.summary:
             lines.append(f"  {self.summary}")
         lines.append("")
@@ -338,10 +441,13 @@ class FigureSpec:
 
         lines += [
             "always accepted",
-            f"  --stem NAME                     {OPTIONS['stem'].help}",
+            *(f"  {OPTIONS[name].flag} {OPTIONS[name].metavar}".ljust(34)
+              + OPTIONS[name].help
+              for name in SELECTION if name != "panels"),
             "",
             "text, on every figure",
             "  " + " ".join(f"--{slot}" for slot in SLOTS),
+            "  default subtitles, footnotes and notes stay in the audit bundle, not on the canvas",
             '  set any to "" to take that line off the figure',
             "",
             "placement, on every figure",
@@ -380,8 +486,23 @@ def figure(
     options: tuple[Option, ...] = (),
     switches: tuple[str, ...] = (),
     summary: str = "",
+    purpose: str = "result",
 ) -> Callable:
     """Declare one figure. Same contract as ``analysis.registry.register``."""
+
+    # Every figure that performs a fresh rhythm fit exposes one complete
+    # Circadian Workbench contract. A new method-specific setting therefore
+    # appears everywhere rather than becoming a private flag on one page.
+    declared_names = {declared.name for declared in options}
+    if "fit_method" in declared_names or "significance_method" in declared_names:
+        from analysis.circadian import CIRCADIAN_ANALYSIS_OPTION_DEFAULTS
+        options = (*options, *(Option(name, default=default)
+                   for name, default in CIRCADIAN_ANALYSIS_OPTION_DEFAULTS.items()
+                   if name not in declared_names))
+    elif "detrend" in declared_names:
+        from analysis.circadian import DETREND_DEFAULTS
+        options = (*options, *(Option(name, default=None)
+                   for name in DETREND_DEFAULTS if name not in declared_names))
 
     def decorator(build: Callable) -> Callable:
         source = Path(inspect.getfile(build)).resolve()
@@ -411,6 +532,7 @@ def figure(
             slug=slug, number=number, title=title, grammar=grammar, build=build,
             panels=tuple(panels), reads=tuple(reads), options=tuple(options),
             switches=tuple(switches), summary=described, source=source,
+            purpose=purpose,
         )
         return build
 
@@ -435,11 +557,6 @@ def get_figure(slug: str) -> FigureSpec:
     return FIGURES[slug]
 
 
-def builder_files() -> list[Path]:
-    """Every numbered builder, in number order."""
-    return sorted(HERE.glob("[0-9][0-9]_*.py"))
-
-
 def load_all() -> dict[str, FigureSpec]:
     """Import every builder that is on the schema, and return the catalogue.
 
@@ -461,11 +578,11 @@ def load_all() -> dict[str, FigureSpec]:
 
 
 def catalogue() -> list[tuple[int, Path, FigureSpec | None]]:
-    """One row per numbered builder: its number, its file, and its declaration.
+    """One row per result or review builder and its declaration.
 
-    A file with no declaration still gets a row. The numbered set is what a user
-    sees in the folder, and a catalogue that listed only the converted half
-    would read as though the others had been deleted.
+    A file with no declaration still gets a row. Compatibility launchers at the
+    old paths of review builders are intentionally absent: the canonical file
+    under ``review/`` is the one declaration and the one catalogue row.
     """
     load_all()
     by_source = {spec.source: spec for spec in FIGURES.values()}
@@ -495,6 +612,9 @@ class FigureContext:
     summary: dict
     field: dict
     stem: str | None
+    #: Which item of the run's plot plan this build is drawing, or ``None`` for
+    #: the ordinary one-drawing-per-figure build.
+    item: str | None = None
     sources: dict[str, Path] = field(default_factory=dict)
     argv: list[str] = field(default_factory=list)
     #: Where each resolved option came from: ``flag``, ``config`` or ``default``.
@@ -509,6 +629,33 @@ class FigureContext:
     _drawn: list[str] | None = None
     _run_options: dict[str, Any] | None = None
     _run_placements: dict[str, Any] | None = None
+    _item_settings: dict[str, Any] | None = None
+
+    @property
+    def name(self) -> str:
+        """What this drawing is called: its item name, or the figure slug.
+
+        One property rather than a conditional at each of the places a name
+        becomes a path, because the failure of getting one of them wrong is a
+        bundle whose folder and whose figure file disagree about what is in it.
+        """
+        return self.item or self.spec.slug
+
+    def item_settings(self) -> dict[str, Any]:
+        """Everything the plan's item says, this time including ``stem`` and
+        ``panels``.
+
+        ``_from_run`` deliberately holds those two back, because ``_schema``
+        refuses an option the figure does not declare and no figure declares
+        them. They are still settings the plan is allowed to make, so they are
+        read from here instead - by the two places that already read them from
+        the command line.
+        """
+        if self._item_settings is None:
+            self._item_settings = ({} if self.item is None else
+                                   item_settings(Path(self.run), self.spec.slug,
+                                                 self.item))
+        return dict(self._item_settings)
 
     # -------------------------------------------------------------- the movie
 
@@ -546,8 +693,21 @@ class FigureContext:
 
     # -------------------------------------------------------------- the inputs
 
+    def _resolver(self, name: str):
+        """Which of the two searches finds this table, taken from its declaration.
+
+        A figure says where its table lives once, in ``reads``, and every read
+        of it goes to the same place. Choosing here rather than at each call
+        site is what stops one page reading ``statistics.csv`` from the run and
+        another from a stem, which would be two different files with one name.
+        """
+        declared = self.spec.reads_named(name)
+        scope = getattr(declared, "scope", "movie")
+        return require_run_table if scope == "run" else require_table
+
     def table_path(self, name: str, module: str | None = None) -> Path:
-        path = require_table(self.tables, name, module or self._module_for(name))
+        resolve = self._resolver(name)
+        path = resolve(self.tables, name, module or self._module_for(name))
         self.sources.setdefault(name, path)
         return path
 
@@ -568,11 +728,32 @@ class FigureContext:
         that draws a wrong figure instead of raising.
         """
         try:
-            path = require_table(self.tables, name, self._module_for(name))
+            path = self._resolver(name)(self.tables, name, self._module_for(name))
         except SystemExit:
             return None
         self.sources.setdefault(name, path)
         return pd.read_csv(path)
+
+    def record_source(self, name: str, path: Path) -> Path:
+        """Put a file in the bundle that is not one of the declared tables.
+
+        For the page whose claim rests on a file being *absent*. The contrast
+        forest on a run that declared no comparisons is the case: it reads no
+        table, and a bundle with no traced source is not reproducible and is
+        refused. What it actually rests on is the run manifest, which records
+        the configuration that declared nothing - so that is what it registers,
+        and the page becomes checkable rather than merely empty.
+
+        Not a way around ``reads``. A table a figure draws numbers from goes in
+        the declaration, where the missing-table message and the option checking
+        can see it.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise SystemExit(f"{self.spec.slug} names {path} as a source, and it "
+                             f"is not there")
+        self.sources.setdefault(name, path)
+        return path
 
     def stack_path(self, name: str, module: str | None = None) -> Path:
         path = stack_for(self.tables, name, module or self._module_for(name))
@@ -645,8 +826,16 @@ class FigureContext:
         return self._declared(name).module
 
     def module_params(self, module: str) -> dict:
-        """What one module was configured with when this run was measured."""
-        return module_params(self.run, module, self.stem)
+        """Stored module settings, with this figure's explicit baseline overrides."""
+        params = module_params(self.run, module, self.stem)
+        if module == "rhythms":
+            from analysis.circadian import DETREND_DEFAULTS
+            declared_names = {declared.name for declared in self.spec.options}
+            for name in DETREND_DEFAULTS.keys() & declared_names:
+                value = self.option(name)
+                if value is not None:
+                    params = {**params, name: value}
+        return params
 
     def prepare(self) -> None:
         make_bundle(self.bundle, self.sources)
@@ -673,7 +862,11 @@ class FigureContext:
             return value
         recorded = self._from_run_options()
         if name in recorded:
-            self.option_source[name] = "config"
+            # Which of the two recorded layers it came from. Both are "what the
+            # run says", but only one of them is why *this* drawing differs from
+            # its siblings, and that is the line worth reading in the bundle.
+            self.option_source[name] = (
+                "item" if name in self.item_settings() else "config")
             self.option_value[name] = recorded[name]
             return recorded[name]
         self.option_source[name] = "default"
@@ -700,7 +893,7 @@ class FigureContext:
         figure does not declare must not see them.
         """
         if self._run_placements is None:
-            recorded = _from_run(Path(self.run), self.spec.slug)[1]
+            recorded = _from_run(Path(self.run), self.spec.slug, self.item)[1]
             self._run_placements = {
                 name: value for name, value in recorded.items()
                 if name in PLACEMENTS and value is not None
@@ -717,7 +910,7 @@ class FigureContext:
         success.
         """
         if self._run_options is None:
-            _, recorded = _from_run(Path(self.run), self.spec.slug)
+            _, recorded = _from_run(Path(self.run), self.spec.slug, self.item)
             declared = {o.name: o for o in self.spec.options}
             # A placement in the block is for every figure, so it is not this
             # figure's to accept or refuse; ``_placement`` reads it separately.
@@ -754,7 +947,16 @@ class FigureContext:
         """
         available = [p.key for p in self.spec.panels]
         wanted = raw_flag("panels", self.argv)
-        keys = commas(wanted) if wanted is not None else list(available)
+        if wanted is None:
+            # The plan may name the panels too. Read after the flag and before
+            # the whole page, so a one-off `--panels` still beats what a
+            # recorded item asked for.
+            planned = self.item_settings().get("panels")
+            keys = (list(planned) if isinstance(planned, (list, tuple))
+                    else commas(planned) if planned is not None
+                    else list(available))
+        else:
+            keys = commas(wanted)
         unknown = [key for key in keys if key not in available]
         if unknown:
             raise SystemExit(
@@ -851,6 +1053,12 @@ class FigureContext:
 
         The drawing function comes off the spec rather than being named here, so
         ``--help`` and the coverage test see the same function the page draws.
+
+        The heading is redrawn here because removing the placeholder axes takes
+        its title with it. Every block panel in the package had silently lost
+        its name that way, which is worse than it sounds on a stacked page: the
+        panel above still has one, so a reader takes the missing title for a
+        continuation of it rather than for a separate panel.
         """
         panel = self.spec.panel(key)
         if panel.draw is None:
@@ -858,6 +1066,25 @@ class FigureContext:
         rect = tuple(ax.get_position().bounds)
         ax.remove()
         drawn = panel.draw(figure_, rect, *args, **kwargs)
+        # Above the topmost axes the panel actually made, not above the slot it
+        # was given. A block panel is free to use less of its rectangle than it
+        # was offered - a ridgeline leaves the gap its overlap implies - and a
+        # heading pinned to the slot then floats away from the thing it names.
+        made = getattr(drawn, "axes", None)
+        made = made if isinstance(made, (list, tuple)) else ([made] if made is not None else [])
+        made = [ax for ax in made if hasattr(ax, "get_position")]
+        if made:
+            # As a title on the panel's own topmost axes, not as free-floating
+            # figure text at a computed height. Both put it in the same place
+            # when the arithmetic is right, and only one of them stays right
+            # when a drawer changes how much of its rectangle it uses.
+            top = max(made, key=lambda ax: sum(ax.get_position().bounds[1::2]))
+            top.set_title(panel.heading(), loc="left",
+                          fontsize=self.theme.size("panel"), fontweight="bold")
+        else:
+            figure_.text(rect[0], rect[1] + rect[3] + 0.004, panel.heading(),
+                         fontsize=self.theme.size("panel"), fontweight="bold",
+                         color=self.theme.colour("ink"), va="bottom")
         return self.drew(key, drawn) if isinstance(drawn, PanelResult) else drawn
 
     def sheet(self, width: float, height: float) -> Any:
@@ -870,29 +1097,180 @@ class FigureContext:
         """
         return plt.figure(figsize=self.theme.canvas(width, height))
 
-    def layout(self, panels: list[Panel] | PanelList, bottom_inches: float = 1.55
+    def layout(self, panels: list[Panel] | PanelList, bottom_inches: float = 1.55,
+               weights: dict[str, float] | None = None,
+               minimum_sizes: dict[str, tuple[float, float]] | None = None,
+               top_inches: float = 1.65, left_inches: float = 1.9,
+               right_inches: float = 0.8, gap_inches: float = 0.8,
                ) -> tuple[Any, dict[str, Any]]:
-        """A stack of panels on one sheet, with room for the header and footnote.
+        """Stack full-sized panels; add paper instead of reducing a plot.
 
         Physical inches rather than fixed fractions for the title and the
         provenance line, so a large house-theme label stays clear on both a
         two-panel and a five-panel canvas.
+
+        ``weights`` multiplies a panel's declared minimum height; it never
+        reallocates a fixed total. A raster with four hundred rows can therefore
+        ask for several times the usual height without taking height from its
+        neighbours.
+        """
+        placements = {
+            panel.key: (index, 0, 1, 1)
+            for index, panel in enumerate(panels)
+        }
+        return self.grid_layout(
+            panels, placements, bottom_inches=bottom_inches, weights=weights,
+            minimum_sizes=minimum_sizes,
+            top_inches=top_inches, left_inches=left_inches,
+            right_inches=right_inches, vertical_gap_inches=gap_inches,
+        )
+
+    def grid_layout(
+        self,
+        panels: list[Panel] | PanelList,
+        placements: dict[str, tuple[int, int, int, int]],
+        *,
+        bottom_inches: float = 1.55,
+        weights: dict[str, float] | None = None,
+        minimum_sizes: dict[str, tuple[float, float]] | None = None,
+        top_inches: float = 1.65,
+        left_inches: float = 1.9,
+        right_inches: float = 0.8,
+        horizontal_gap_inches: float = 0.8,
+        vertical_gap_inches: float = 0.8,
+        min_canvas_width_inches: float = 13.8,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Lay out minimum-sized plots on a sheet that grows around the grid.
+
+        Each placement is ``(row, column, row span, column span)``. Rows count
+        from the top. Panel dimensions are constraints on the drawing area,
+        not shares of a pre-existing page, so adding a column or row cannot
+        make any existing axes smaller.
         """
         if not panels:
             raise SystemExit("--panels selected no panels")
-        height = 2.4 + 3.5 * len(panels)
-        figure_ = plt.figure(figsize=self.theme.canvas(13.8, height))
-        grid = figure_.add_gridspec(
-            len(panels), 1, left=0.14, right=0.94, bottom=bottom_inches / height,
-            top=1 - 1.65 / height, hspace=0.88,
+        panel_by_key = {panel.key: panel for panel in panels}
+        missing = [panel.key for panel in panels if panel.key not in placements]
+        unknown = [key for key in placements if key not in panel_by_key]
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append(f"missing {missing}")
+            if unknown:
+                details.append(f"unknown {unknown}")
+            raise ValueError("grid placements do not match panels: " + "; ".join(details))
+
+        unknown_sizes = [key for key in (minimum_sizes or {}) if key not in panel_by_key]
+        if unknown_sizes:
+            raise ValueError(f"minimum sizes name unknown panels: {unknown_sizes}")
+        sizes = {
+            key: tuple(float(value) for value in (minimum_sizes or {}).get(
+                key, (panel.min_width_inches, panel.min_height_inches)))
+            for key, panel in panel_by_key.items()
+        }
+        if any(len(size) != 2 or not all(np.isfinite(value) and value > 0
+                                        for value in size)
+               for size in sizes.values()):
+            raise ValueError(f"minimum panel sizes must be finite and positive: {sizes}")
+
+        checked: dict[str, tuple[int, int, int, int]] = {}
+        for key, raw in placements.items():
+            row, column, row_span, column_span = raw
+            values = (row, column, row_span, column_span)
+            if any(not isinstance(value, int) for value in values):
+                raise ValueError(f"{key}: grid placement must contain integers, got {raw}")
+            if row < 0 or column < 0 or row_span <= 0 or column_span <= 0:
+                raise ValueError(f"{key}: invalid grid placement {raw}")
+            checked[key] = values
+
+        multipliers = {
+            key: float((weights or {}).get(key, 1.0)) for key in panel_by_key
+        }
+        if any(not np.isfinite(value) or value <= 0
+               for value in multipliers.values()):
+            raise ValueError(
+                f"panel weights must be finite and positive, got {multipliers}"
+            )
+        margins_and_gaps = (
+            bottom_inches, top_inches, left_inches, right_inches,
+            horizontal_gap_inches, vertical_gap_inches, min_canvas_width_inches,
         )
-        axes = {}
-        for index, panel in enumerate(panels):
-            axes[panel.key] = figure_.add_subplot(
-                grid[index, 0], projection="polar" if panel.polar else None)
-            axes[panel.key].set_title(panel.heading(), loc="left",
-                                      fontsize=self.theme.size("panel"),
-                                      fontweight="bold")
+        if any(not np.isfinite(value) or value < 0 for value in margins_and_gaps):
+            raise ValueError(
+                "layout margins and gaps must be finite non-negative inches"
+            )
+
+        rows = max(row + row_span for row, _, row_span, _ in checked.values())
+        columns = max(column + column_span
+                      for _, column, _, column_span in checked.values())
+        row_heights = [0.0] * rows
+        column_widths = [0.0] * columns
+
+        # Short spans first establish the natural cell sizes. Wider or taller
+        # panels then enlarge every cell they cross by the same amount.
+        by_span = sorted(
+            panels,
+            key=lambda panel: checked[panel.key][2] + checked[panel.key][3],
+        )
+        for panel in by_span:
+            row, column, row_span, column_span = checked[panel.key]
+            minimum_width = max(panel.min_width_inches, sizes[panel.key][0])
+            current_width = (
+                sum(column_widths[column:column + column_span])
+                + horizontal_gap_inches * (column_span - 1)
+            )
+            width_deficit = max(0.0, minimum_width - current_width)
+            for index in range(column, column + column_span):
+                column_widths[index] += width_deficit / column_span
+
+            required_height = max(
+                panel.min_height_inches, sizes[panel.key][1]) * multipliers[panel.key]
+            current_height = (
+                sum(row_heights[row:row + row_span])
+                + vertical_gap_inches * (row_span - 1)
+            )
+            height_deficit = max(0.0, required_height - current_height)
+            for index in range(row, row + row_span):
+                row_heights[index] += height_deficit / row_span
+
+        content_width = (left_inches + sum(column_widths)
+                         + horizontal_gap_inches * (columns - 1) + right_inches)
+        # The house page width is also the width its title wrapping was tuned
+        # against. A square plot may need only five inches, but putting it on a
+        # five-inch-wide page would make the header collide before any data is
+        # drawn. Extra paper is split around the grid; the declared plot is
+        # untouched.
+        width = max(min_canvas_width_inches, content_width)
+        horizontal_offset = (width - content_width) / 2.0
+        height = (top_inches + sum(row_heights)
+                  + vertical_gap_inches * (rows - 1) + bottom_inches)
+        figure_ = plt.figure(figsize=self.theme.canvas(width, height))
+
+        axes: dict[str, Any] = {}
+        for panel in panels:
+            row, column, row_span, column_span = checked[panel.key]
+            x = (horizontal_offset + left_inches + sum(column_widths[:column])
+                 + horizontal_gap_inches * column)
+            axes_width = (
+                sum(column_widths[column:column + column_span])
+                + horizontal_gap_inches * (column_span - 1)
+            )
+            axes_height = (
+                sum(row_heights[row:row + row_span])
+                + vertical_gap_inches * (row_span - 1)
+            )
+            axes_top = (
+                height - top_inches - sum(row_heights[:row])
+                - vertical_gap_inches * row
+            )
+            rect = (x / width, (axes_top - axes_height) / height,
+                    axes_width / width, axes_height / height)
+            axes[panel.key] = figure_.add_axes(
+                rect, projection="polar" if panel.polar else None)
+            axes[panel.key].set_title(
+                panel.heading(), loc="left", fontsize=self.theme.size("panel"),
+                fontweight="bold",
+            )
         return figure_, axes
 
 
@@ -901,7 +1279,7 @@ class FigureResult:
     """What a build function hands back: the drawing and the words beside it.
 
     Everything that happens to these - saving, the README, the copied sources,
-    the closing line - is the same for all thirty-six pages, so it happens once
+    the closing line - is the same for every page, so it happens once
     in ``_finish`` rather than at the bottom of every builder.
     """
 
@@ -969,6 +1347,11 @@ class FigureResult:
     #: missing reads as a plot whose axes happen to end there.
     keep_spines: tuple[str, ...] = ()
 
+    # Opt-in exact producers use the current flat plot-that bundle contract.
+    # Legacy figures retain their existing exporter and file layout.
+    standalone_producer: str | None = None
+    producer_sources: dict[str, Path] = field(default_factory=dict)
+
 
 # -------------------------------------------------------------------- running
 
@@ -1019,8 +1402,9 @@ def _check_argv(spec: FigureSpec, argv: list[str]) -> None:
                 + (f"This figure also accepts: "
                    + " ".join(f"--{name}" for name in spec.switches) + NEWLINE
                    if spec.switches else "")
-                + f"Every figure also accepts: --stem --panels "
-                + " ".join(f"--{slot}" for slot in SLOTS) + " "
+                + "Every figure also accepts: "
+                + " ".join(f"--{name.replace('_', '-')}" for name in SELECTION)
+                + " " + " ".join(f"--{slot}" for slot in SLOTS) + " "
                 + " ".join(f"--{name}" for name in UNIVERSAL_SWITCHES)
             )
         index += skip_tokens(token)
@@ -1214,11 +1598,14 @@ def _header_positions(width: float, height: float, x: Length, title: Length,
 def _finish(ctx: FigureContext, result: FigureResult) -> Path:
     """Save the figure, the table it was drawn from, and the words beside it.
 
-    Every line of this is the same for all thirty-six figures, which is why it
+    Every line of this is the same for every figure, which is why it
     is here and not at the bottom of each one. A builder that did its own saving
     would be a builder whose bundle could differ from its neighbours' without
     anybody noticing.
     """
+    if result.standalone_producer is not None:
+        from _flat_bundle import finish
+        return finish(ctx, result)
     ctx.prepare()
     der = ctx.bundle / "data" / "der"
     der.mkdir(parents=True, exist_ok=True)
@@ -1231,16 +1618,20 @@ def _finish(ctx: FigureContext, result: FigureResult) -> Path:
             f"or pass the leading panel through ctx.drew(<key>, ...), or the "
             f"bundle has a picture with no table behind it")
     table.to_csv(der / "figure_data.csv", index=False)
-    for name, table in result.auxiliary.items():
-        table.to_csv(der / name, index=False)
+    # A separate name, because ``table`` is read again at the bottom for the
+    # closing line. Reusing it here made every page with a sibling table report
+    # that sibling's row count as the figure's own.
+    for name, sibling in result.auxiliary.items():
+        sibling.to_csv(der / name, index=False)
 
     text = figure_text(
-        ctx.run, ctx.spec.slug, argv=ctx.argv,
+        ctx.run, ctx.spec.slug, argv=ctx.argv, item=ctx.item,
         title=_default_title(ctx.spec, result),
         subtitle=result.subtitle,
         footnote=result.footnote or units_note(ctx.summary),
         note=result.note,
     )
+    canvas_text = text.on_canvas()
     figure_height = float(result.figure.get_figheight())
     figure_width = float(result.figure.get_figwidth())
     under = _placement(ctx, "footnote_y", result.footnote_y)
@@ -1255,18 +1646,24 @@ def _finish(ctx: FigureContext, result: FigureResult) -> Path:
         left, title_y, wrap_title(ctx.theme, result.figure, text.title),
         fontsize=ctx.theme.size("title"), fontweight="bold",
         color=ctx.theme.colour("ink"), va="top",
-    ), result.figure.text(
-        left, subtitle_y, text.subtitle, fontsize=ctx.theme.size("subtitle"),
-        color=ctx.theme.colour("caption"), va="top",
     )]
-    note = _place_note(result.figure, ctx.theme, text.note, result.note_at,
+    if canvas_text.subtitle:
+        header.append(result.figure.text(
+            left, subtitle_y,
+            wrap_footnote(ctx.theme, result.figure, canvas_text.subtitle, "subtitle"),
+            fontsize=ctx.theme.size("subtitle"),
+            color=ctx.theme.colour("caption"), va="top",
+        ))
+    note = _place_note(result.figure, ctx.theme, canvas_text.note, result.note_at,
                        figure_width, figure_height)
     if note is not None:
         header.append(note)
     footnote = None
-    if text.footnote:
+    if canvas_text.footnote:
         footnote = result.figure.text(
-            left, footnote_y, text.footnote, fontsize=ctx.theme.size("note"),
+            left, footnote_y,
+            wrap_footnote(ctx.theme, result.figure, canvas_text.footnote),
+            fontsize=ctx.theme.size("note"),
             color=ctx.theme.colour("caption"), va="bottom",
         )
     for ax in result.axes:
@@ -1293,15 +1690,19 @@ def _finish(ctx: FigureContext, result: FigureResult) -> Path:
     heading = result.heading or _default_title(ctx.spec, result)
     write_readme(ctx.bundle, f"{heading}, {ctx.summary['stem']}", text, body)
     write_standalone_producer(ctx.bundle, text.title, ctx.spec.grammar)
+    # The item's name, flattened: a nested item is a nested *folder*, and the
+    # file inside it cannot carry a separator. One name for both, so the folder
+    # and the file it holds can never disagree about which drawing this is.
+    filename = f"{flat(ctx.name)}.svg"
     save_reprofig_figure(
-        ctx.theme, result.figure, ctx.run, ctx.bundle, f"{ctx.spec.slug}.svg",
+        ctx.theme, result.figure, ctx.run, ctx.bundle, filename,
         claim=text.claim, grammar=ctx.spec.grammar, producer="code/plot.py",
     )
-    target = ctx.bundle / "fig" / f"{ctx.spec.slug}.svg"
+    target = ctx.bundle / "fig" / filename
     plt.close(result.figure)
     if result.console:
         print(result.console)
-    print(f"{ctx.spec.slug}: panels {ctx.drawn}; rows {len(table):,}; {target}")
+    print(f"{ctx.name}: panels {ctx.drawn}; rows {len(table):,}; {target}")
     print(f"title ({text.source['title']}): {text.title}")
     for name, origin in sorted(ctx.option_source.items()):
         if origin != "default":
@@ -1319,16 +1720,30 @@ def run_figure(slug: str, default_run: str | None = None,
         raise SystemExit(0)
     _check_argv(spec, tokens)
     run = run_folder(default_run)
+    # Read before the context exists, because where this build writes depends on
+    # it. An unknown name is refused here, before a bundle folder is made for a
+    # figure that is not going to be drawn.
+    item = option("item", default=None, argv=tokens)
+    planned = {} if item is None else item_settings(run, slug, item)
     stem = option("stem", default=None, argv=tokens)
+    if stem is None and planned.get("stem") is not None:
+        stem = str(planned["stem"])
+    if stem is None and spec.run_level:
+        # This page reads nothing that belongs to a movie, so it must not ask
+        # for one. Every context handle is still built from a stem - where the
+        # tables sit, which acquisition facts the units line quotes - and for a
+        # run-level page any movie answers those the same way.
+        stem = any_movie(run)
     ctx = FigureContext(
         spec=spec,
         run=run,
         tables=tables_for(run, stem),
         theme=theme_for(run),
-        bundle=bundle_for(run, slug),
+        bundle=bundle_for(run, item or slug),
         summary=summary_for(run, stem),
         field=field_for(run, stem),
         stem=stem,
+        item=item,
         argv=tokens,
     )
     return _finish(ctx, spec.build(ctx))

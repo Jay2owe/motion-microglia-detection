@@ -52,6 +52,53 @@
       }
     }
   },
+  "_comment_metric_groups": "A named set of measured columns, used by name wherever a list of columns is expected: write \"@rhythm_signals\" instead of the seven names. `metrics` is a declared option on 26 of the 38 figures and on every contrast, so a group written once here works everywhere, and a year later the run folder can still say what the name meant on the day - `run` records both the declaration and the columns it resolved to. Two forms. A LIST is taken literally, and every name in it must be a column some module says it writes; a group naming a column nothing writes is refused when the configuration loads rather than discovered as a blank figure. A SELECTOR - {\"role\": ..., \"module\": ...}, ANDed - selects from what the modules already declare, so it follows the code instead of a list somebody has to remember to update. `role` alone is blunt: of 460 declared columns 90 are `morphology` and 82 are `reference`, and roles such as `stable`, `significant` and `invalid` are states rather than measurement families - pair it with `module`, as `drift` does below. There is no `table` selector: a module may write several tables and a column declaration does not say which one it lands in, so a group by table would be this package guessing. A group may not be built out of another group. The same \"@name\" works outside a plan - in figures.<slug>.options.metrics, and in a contrast: {\"name\": \"drift_everywhere\", \"table\": \"trend\", \"metrics\": [\"@drift\"], ...}.",
+  "metric_groups": {
+    "rhythm_signals": [
+      "area_px",
+      "corrected_mean",
+      "integrated_density",
+      "solidity",
+      "ramification_index",
+      "turnover_index",
+      "step_px"
+    ],
+    "drift": {
+      "module": "trend",
+      "role": "variable"
+    }
+  },
+  "_comment_plots": "What to draw. Empty, or absent, means the package behaves exactly as it did before plans existed: `build_all.py` still draws every figure once. `for_each` fans a request out into ONE FIGURE PER VALUE; `options` puts every value on ONE FIGURE. That difference is the whole point - the first request below is seven pages, the second is one page with seven signals on it. Several `for_each` keys take the cross product, with the last key varying fastest, so the order the figures appear in is predictable. An item is named <slug>/<key>=<value> unless `as` gives a template, which may carry {key} for any key the request varies. Two items with one name are refused, because the second would overwrite the first's bundle. Check a plan with `python -m analysis doctor --config <this file>`, which lists every item and every reason one cannot be drawn - including a figure whose module is not in enabled_modules. Count it with `python -m analysis plots <run> --dry-run` before drawing it, and draw it with `python -m analysis plots <run>`.",
+  "plots": [
+    {
+      "figure": "rhythm-strength",
+      "for_each": {
+        "metrics": "@rhythm_signals"
+      },
+      "options": {
+        "bins": 24
+      }
+    },
+    {
+      "figure": "rhythm-strength",
+      "options": {
+        "metrics": "@rhythm_signals"
+      },
+      "as": "rhythm-strength/all-signals"
+    },
+    {
+      "figure": "cell-report-card",
+      "for_each": {
+        "identity": [
+          7,
+          12,
+          40
+        ]
+      },
+      "as": "report-card/cell-{identity}",
+      "footnote": "One of the three cells observed in every frame."
+    }
+  ],
   "_comment_windows": "Named stretches of the recording, so a change partway through is not averaged away. Each one is summarised separately into cell_summary_windowed.csv and frame_summary_windowed.csv - one row per cell per window, so a new window adds rows and never columns. Declare in hours since the recording began, or in frames, never both; hours are a position in the movie and not a time of day, because this package holds no recording start time. Windows are half-open (from <= h < to), so two that share an edge do not both claim the frame on it - if they did, every paired difference would be computed against a baseline holding the first frame of the response. Windows may overlap and need not cover everything; a frame in no window contributes to no windowed summary. Set `baseline` to another window's name and window_change.csv carries this window's value against that one, per cell per metric, as a difference and as a ratio - both, because a change of 40 camera units means nothing without knowing whether the baseline was 50 or 5000. Declaring no windows writes no windowed files and changes nothing. A movie may carry its own `windows` block, which replaces this one for that movie rather than adding to it.",
   "windows": [
     {
@@ -68,7 +115,7 @@
       "description": "after the drug went in"
     }
   ],
-  "_comment_contrasts": "What to compare, named explicitly. There is deliberately no way to test every metric at once: the package declares hundreds of columns, and a correction applied across a thousand tests nobody meant to run destroys the power to find the twenty that were the point. Each contrast names the pooled table, the metrics, the column to group by, the groups, the test, and - with no default anywhere - the unit of replication. `unit` is the setting that decides the answer: eighty-three cells from one movie are not eighty-three independent samples, so `cell` is only defensible when cells come from many movies and the movie effect is what is being tested; `movie` and `subject` reduce each movie's or each animal's cells to one value first, and then need `aggregate` (median or mean), because that choice changes the answer too. Tests offered: mannwhitney and kruskal for ranks, welch_t and anova for means, wilcoxon and paired_t for a window against its own baseline in the same cells. Which test runs is declared and never chosen from the data - running a normality test and picking accordingly is a garden of forking paths with a friendly face. The correction is applied within `family` and never across families, so put the results you meant to look at together in one family and a broad sweep in another; every contrast in a family must agree about `correction` and `alpha`. Set `window` to test inside one declared window. Results go to statistics.csv, one row per result, including the rows that could not be tested - too few units, a group that is not there, a metric one movie never measured - each written with its reason in `note`. Declaring no contrasts writes no statistics.csv.",
+  "_comment_contrasts": "What to compare, named explicitly. There is deliberately no way to test every metric at once: the package declares hundreds of columns, and a correction applied across a thousand tests nobody meant to run destroys the power to find the twenty that were the point. Each contrast names the pooled table, the metrics, the column to group by, the groups, the test, and - with no default anywhere - the unit of replication. `unit` is the setting that decides the answer: eighty-three cells from one movie are not eighty-three independent samples, so `cell` is only defensible when cells come from many movies and the movie effect is what is being tested; `movie` and `subject` reduce each movie's or each animal's cells to one value first, and then need `aggregate` (median or mean), because that choice changes the answer too. Tests offered: mannwhitney and kruskal for ranks, welch_t and anova for means, wilcoxon and paired_t for a window against its own baseline in the same cells, and signed_rank for one group against zero - which is the only shape a single-group table supports, and the right one for a slope, a change or a difference, all of which have a meaningful zero. A one-group test names exactly one group and is refused if given two. Which test runs is declared and never chosen from the data - running a normality test and picking accordingly is a garden of forking paths with a friendly face. The correction is applied within `family` and never across families, so put the results you meant to look at together in one family and a broad sweep in another; every contrast in a family must agree about `correction` and `alpha`. Set `window` to test inside one declared window. Results go to statistics.csv, one row per result, including the rows that could not be tested - too few units, a group that is not there, a metric one movie never measured - each written with its reason in `note`. Declaring no contrasts writes no statistics.csv.",
   "contrasts": [
     {
       "name": "reporter_by_condition",
@@ -108,6 +155,23 @@
       "test": "wilcoxon",
       "correction": "benjamini_hochberg",
       "alpha": 0.05
+    },
+    {
+      "name": "drift_in_area",
+      "description": "Across the whole recording, does each cell's robust area slope differ from zero?",
+      "family": "drift",
+      "table": "trend",
+      "metrics": [
+        "slope_per_hour"
+      ],
+      "group_by": "metric",
+      "groups": [
+        "area_px"
+      ],
+      "unit": "cell",
+      "test": "signed_rank",
+      "correction": "benjamini_hochberg",
+      "alpha": 0.05
     }
   ],
   "enabled_modules": [
@@ -128,6 +192,7 @@
     "sequence_distance",
     "coupling",
     "rhythms",
+    "trend",
     "neighbours",
     "territory_shape",
     "walk",
@@ -309,24 +374,17 @@
       "min_shared_boundary_px": 1,
       "include_unclaimed": false
     },
+    "_comment_regimes": "One size-and-movement classifier at cell-frame level. Size is area_px in the current frame. Movement is step_px_gapless, the centroid displacement from the immediately preceding frame into the current one; a first frame or a frame after a gap is not classified because there is no comparable movement interval. Each feature is independently split at the configured quantiles into low, medium and high. Crossing the two levels makes nine fixed subgroups: size changes slowest and movement fastest, from subgroup 0 (low size, low movement) to subgroup 8 (high size, high movement).",
     "regimes": {
-      "feature_columns": [
-        "area_px",
-        "circularity",
-        "solidity",
-        "ramification_index",
-        "aspect_ratio",
-        "skeleton_branches",
-        "turnover_index",
-        "step_px_gapless",
-        "punctateness"
+      "size_column": "area_px",
+      "movement_column": "step_px_gapless",
+      "category_quantiles": [
+        0.3333333333333333,
+        0.6666666666666666
       ],
-      "n_regimes": 4,
-      "standardise": true,
-      "random_state": 20260825,
       "min_frames_per_cell": 12
     },
-    "_comment_recurrence": "metrics is the state vector each frame of a cell is described by, and it is the same nine `regimes` clusters on so the two answer the same question two ways. threshold_quantile is the fraction of a cell's own frame pairs counted as 'the same state' - a quantile rather than a distance, so a cell that barely changes is not judged against one that never stops, and the distance it worked out to rides on every row as recurrence_threshold_distance. surrogates is how many matched-noise traces each cell is compared against; drifting noise recurs impressively, so the band is the point and lowering this weakens every claim the table supports. Every cell that was measured in min_observations frames gets a row: this is a measurement, not a page, so there is deliberately no way to ask for the best sixteen.",
+    "_comment_recurrence": "metrics is the broad morphological state vector used only by recurrence; the `regimes` classifier separately uses size and movement. Recurrence inherits detrend and detrend_window_hours from the main rhythms block; add either key here only to override it for recurrence. threshold_quantile is the fraction of a cell's own frame pairs counted as 'the same state' - a quantile rather than a distance, so a cell that barely changes is not judged against one that never stops, and the distance it worked out to rides on every row as recurrence_threshold_distance. surrogates is how many matched-noise traces each cell is compared against; drifting noise recurs impressively, so the band is the point and lowering this weakens every claim the table supports. Every cell that was measured in min_observations frames gets a row: this is a measurement, not a page, so there is deliberately no way to ask for the best sixteen.",
     "recurrence": {
       "metrics": [
         "area_px",
@@ -351,6 +409,7 @@
       "window_hours": 4.0,
       "min_overlap_steps": 0
     },
+    "_comment_coupling": "Within-cell lag profiles and between-cell phase comparisons inherit the complete Circadian Workbench period and detrending configuration from the main rhythms block, including period_estimation_method and the 2-48 hour search; add a key here only for a deliberate coupling-specific override.",
     "coupling": {
       "max_lag_frames": 24,
       "metric_pairs": [
@@ -369,7 +428,7 @@
       "min_overlap_steps": 60,
       "surrogates": 200
     },
-    "_comment_rhythms": "The block from bin_hours down is the non-parametric half - when the active phase runs, rather than how big it is - and it is transcribed from the lab's own CircadianWorkbench rather than derived here. bin_hours is the resolution of the folded average day that L5, M10 and the onset template are read off, and it must divide 24 hours; interdaily stability and intradaily variability are always hourly whatever it is, because that is their definition. low_window_hours and high_window_hours are the actigraphy conventions L5 and M10 are named after. onset_off_hours and onset_on_hours are how much quiet has to sit before a candidate hour and how much activity after it for ClockLab's template to call it an onset, and onset_threshold_percent of 80 puts the line between the two at the 20th percentile of the bins that cell was measured in. min_days_for_stability flags stability_underdetermined rather than withholding the number: two days is one comparison, which is computable and weak. Every hour these settings produce is hours since the recording started, not a time of day - this package has no clock.",
+    "_comment_rhythms": "Circadian Workbench owns every circadian calculation. period_estimation_method chooses the period, phase, amplitude and diagnostics; it may be lomb, chi_square, f, ejtk, jtk, fft_nlls, mesa, mfourfit or spectrum_resampling. primary_rhythm_test is separate and supplies the rhythmic verdict, so it must be a significance-bearing method. period_methods controls the complete comparison table and automatically includes both selected methods. descriptive_cosinor is false by default; set it true only to request legacy fixed-period descriptive columns. daily_profile_measures is also false by default because M10, L5, onset and stability assume a 24-hour fold; enable it only for an explicit daily question. All shared figure controls inherit this block when unset. Method-specific settings go in workbench_config. Detrend may use any live Circadian Workbench method, including LOWESS/LOESS, first difference, moving median, Savitzky-Golay, Huber robust linear and asymmetric least squares.",
     "rhythms": {
       "metrics": [
         "area_px",
@@ -381,12 +440,49 @@
         "step_px"
       ],
       "period_search_hours": [
-        16.0,
-        32.0
+        2.0,
+        48.0
       ],
-      "period_step_hours": 0.1,
+      "period_methods": [
+        "lomb",
+        "chi_square",
+        "f"
+      ],
+      "period_estimation_method": "lomb",
+      "primary_rhythm_test": "lomb",
       "fixed_period_hours": 24.0,
+      "descriptive_cosinor": false,
+      "daily_profile_measures": false,
       "detrend": "linear",
+      "detrend_window_hours": 24.0,
+      "detrend_polynomial_degree": 3,
+      "detrend_min_valid_fraction": 0.5,
+      "detrend_bandwidth_hours": null,
+      "detrend_low_cut_hours": 45.0,
+      "detrend_high_cut_hours": 4.0,
+      "detrend_filter_order": 2,
+      "detrend_lowess_fraction": null,
+      "detrend_lowess_iterations": 3,
+      "detrend_asls_smoothness": 1000000.0,
+      "detrend_asls_asymmetry": 0.01,
+      "detrend_asls_iterations": 10,
+      "jtk_periods": [
+        4.0,
+        6.0,
+        8.0,
+        12.0,
+        16.0,
+        20.0,
+        24.0,
+        28.0,
+        32.0,
+        36.0,
+        48.0
+      ],
+      "ejtk_permutations": 1000,
+      "jtk_correction": "none",
+      "jtk_seed": 20260901,
+      "workbench_config": {},
       "min_observations": 24,
       "min_cycles_for_confident_period": 3.0,
       "rhythmic_alpha": 0.05,
@@ -400,6 +496,18 @@
       "onset_on_hours": 6.0,
       "onset_threshold_percent": 80.0,
       "min_days_for_stability": 3.0
+    },
+    "_comment_trend": "Two slopes per cell and measurement use the whole recording: a robust median pairwise slope and an ordinary least-squares line. Their disagreement exposes outlier sensitivity. Neither removes a daily cycle or distinguishes drift from a rhythm; period estimation belongs to the configurable Circadian Workbench analysis.",
+    "trend": {
+      "metrics": [
+        "area_px",
+        "corrected_mean",
+        "solidity",
+        "ramification_index",
+        "turnover_index",
+        "step_px"
+      ],
+      "min_observations": 24
     }
   }
 }

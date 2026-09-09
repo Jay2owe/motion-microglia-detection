@@ -21,18 +21,24 @@ from common import (change_counts, change_overlay, save_rgb_stack, sha256,
 from review_rendering import header, unique_outline
 
 
-RENDERER_VERSION = 2
+RENDERER_VERSION = 4
 HEADER_HEIGHT = 24
 CHANGE_RED = np.array([255, 45, 45], np.uint8)
 
 
 def _align_source(stack: np.ndarray, frames: int, offset: int,
-                  name: str) -> np.ndarray:
+                  name: str, *, allow_transition_stack: bool = False) -> np.ndarray:
     """Apply the established review-frame alignment without changing it."""
     if offset < 0:
         raise ValueError(f"{name} frame offset cannot be negative")
     if len(stack) == frames:
         return stack
+    if allow_transition_stack and frames > 1 and len(stack) == frames - 1:
+        # Motion evidence may encode the T-1 transitions of an already trimmed
+        # T-frame movie. Associate transition i with frame i and repeat the last
+        # transition for the boundary frame, matching the existing clipped-end
+        # convention used for longer full-source motion stacks.
+        return np.concatenate((stack, stack[-1:]), axis=0)
     if len(stack) >= frames:
         indices = np.minimum(offset + np.arange(frames), len(stack) - 1)
         return stack[indices]
@@ -133,6 +139,16 @@ def _fingerprint(value: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _staging_parent(output_dir: Path,
+                    system_temp: Path | None = None) -> Path | None:
+    """Choose same-volume staging when system temp is on another drive."""
+    temp = (Path(tempfile.gettempdir()) if system_temp is None
+            else Path(system_temp)).resolve()
+    output = Path(output_dir).resolve()
+    return None if temp.drive.casefold() == output.drive.casefold() \
+        else output.parent
+
+
 def _verified_existing(output_dir: Path, fingerprint: str) -> dict[str, Any] | None:
     manifest_path = output_dir / "review_manifest.json"
     if not output_dir.exists():
@@ -201,9 +217,11 @@ def build_review_bundle(
         source_frame_offset, "raw")
     effective_motion_offset = (source_frame_offset if motion_frame_offset is None
                                else motion_frame_offset)
+    motion_source = np.asarray(tifffile.imread(paths["motion"]))
+    motion_is_transition_stack = frames > 1 and len(motion_source) == frames - 1
     motion = _align_source(
-        np.asarray(tifffile.imread(paths["motion"])), frames,
-        effective_motion_offset, "motion")
+        motion_source, frames, effective_motion_offset, "motion",
+        allow_transition_stack=True)
     _validate_inputs(baseline, candidate, raw, motion)
 
     output_dir = Path(output_dir).resolve()
@@ -216,6 +234,9 @@ def build_review_bundle(
         "candidate_title": candidate_title,
         "source_frame_offset": int(source_frame_offset),
         "motion_frame_offset": int(effective_motion_offset),
+        "motion_alignment": ("trimmed_transition_stack_terminal_repeat"
+                             if motion_is_transition_stack
+                             else "frame_stack_offset_with_terminal_clip"),
         "frame_interval_min": float(frame_interval_min),
     }
     producer = {
@@ -246,10 +267,14 @@ def build_review_bundle(
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     # Stage outside the synchronized output tree. Dropbox can open a newly written
     # multi-page TIFF for indexing before the directory is published, which prevents
-    # the atomic directory rename on Windows. System-temp staging keeps the files
-    # invisible to Dropbox until the completed, closed bundle is renamed into place.
+    # the atomic directory rename on Windows. Prefer system temp when it is on the
+    # output volume; otherwise use the output parent because Windows cannot atomically
+    # rename a directory across drives.
+    staging_parent = _staging_parent(output_dir)
+    temp_options = {} if staging_parent is None else {"dir": staging_parent}
     with tempfile.TemporaryDirectory(
-            prefix=f"motion-review-{output_dir.name}-staging-") as temp:
+            prefix=f"motion-review-{output_dir.name}-staging-",
+            **temp_options) as temp:
         bundle = Path(temp) / "bundle"
         tiffs = bundle / "tiffs"
         tiffs.mkdir(parents=True)
@@ -321,7 +346,9 @@ def build_review_bundle(
                 "trigger": "explicit local command",
                 "concurrency": "one immutable output directory per render",
                 "mutations": "new files inside output_dir only",
-                "staging": "system temp outside synchronized output tree",
+                "staging": ("system temp on the output volume"
+                            if staging_parent is None
+                            else "temporary sibling on the output volume"),
                 "idempotency": "same fingerprint is verified and reused",
                 "retry": "none; rerun the same command after correcting the failure",
                 "partial_success": "staging is discarded; no bundle is published",

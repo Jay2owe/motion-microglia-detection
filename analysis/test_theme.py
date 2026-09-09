@@ -207,6 +207,55 @@ def test_the_role_cycle_refuses_to_repeat_itself():
         theme.cycle(99)
 
 
+# ---------------------------------------------------------------------- ticks
+
+def test_value_ticks_follow_the_pyflash_five_tick_rule():
+    """The maximum rounds up on the same significant-5 grid as PyFLASH."""
+    assert load_theme().value_ticks(2.0, 113.0) == [
+        0.0, 37.5, 75.0, 112.5, 150.0,
+    ]
+
+
+def test_signed_value_ticks_keep_zero_and_symmetric_limits():
+    assert load_theme().value_ticks(-168.0, 121.0) == [
+        -200.0, -100.0, 0.0, 100.0, 200.0,
+    ]
+
+
+def test_value_tick_structure_can_be_set_in_the_theme():
+    theme = load_theme({"theme": {
+        "value_tick_count": 3,
+        "value_tick_round_to": 2,
+        "value_tick_start": 10,
+    }})
+    assert theme.value_ticks(12.0, 38.0) == [10.0, 24.0, 38.0]
+    assert theme.stamp()["value_ticks"] == {
+        "count": 3, "round_to": 2.0, "start": 10.0,
+    }
+
+
+def test_colour_map_keys_have_one_tunable_physical_shape():
+    theme = load_theme({"theme": {
+        "colour_bar_width_inches": 0.2,
+        "colour_bar_height_inches": 1.8,
+        "colour_bar_gap_inches": 0.12,
+    }})
+    assert theme.stamp()["colour_bar"] == {
+        "width_inches": 0.2, "height_inches": 1.8, "gap_inches": 0.12,
+    }
+
+
+@pytest.mark.parametrize("setting,value", [
+    ("value_tick_count", 1),
+    ("value_tick_count", 4.5),
+    ("value_tick_round_to", 0),
+    ("value_tick_start", float("nan")),
+])
+def test_invalid_value_tick_settings_stop_at_theme_loading(setting, value):
+    with pytest.raises(ValueError, match="theme tick settings"):
+        load_theme({"theme": {setting: value}})
+
+
 # -------------------------------------------------------------------- legend
 
 def test_above_the_axes_is_the_package_default():

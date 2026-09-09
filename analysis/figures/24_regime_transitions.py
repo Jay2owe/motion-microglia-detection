@@ -13,7 +13,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -33,8 +32,10 @@ from panels import morphology as morphology_panels
            Table("regime_profiles.csv", module="regimes")),
     panels=(
         Panel("matrix", morphology_panels.regime_transitions,
+              min_width_inches=5.5, min_height_inches=5.5,
               title="Observed next state"),
-        Panel("null", common.matrix, title="Time-shuffled comparison"),
+        Panel("null", common.matrix, min_width_inches=5.5, min_height_inches=5.5,
+              title="Time-shuffled comparison"),
         Panel("dwell", morphology_panels.dwell_times,
               title="Time spent in each state"),
     ),
@@ -80,20 +81,14 @@ def build(ctx: FigureContext) -> FigureResult:
     normalise = ctx.option("normalise")
     mask_diagonal = not (panels.keys == ["matrix"] and normalise == "none")
     if panels.keys == ["matrix", "null", "dwell"]:
-        height = 9.8
-        fig = plt.figure(figsize=ctx.theme.canvas(13.8, height))
-        grid = fig.add_gridspec(
-            2, 2, left=0.14, right=0.94, bottom=1.55 / height,
-            top=1 - 1.65 / height, hspace=0.92, wspace=0.42,
+        fig, axes = ctx.grid_layout(
+            panels,
+            {
+                "matrix": (0, 0, 1, 1),
+                "null": (0, 1, 1, 1),
+                "dwell": (1, 0, 1, 2),
+            },
         )
-        axes = {
-            "matrix": fig.add_subplot(grid[0, 0]),
-            "null": fig.add_subplot(grid[0, 1]),
-            "dwell": fig.add_subplot(grid[1, :]),
-        }
-        for name, ax in axes.items():
-            ax.set_title(ctx.spec.panel(name).heading(), loc="left", fontsize=ctx.theme.size("panel"),
-                         fontweight="bold")
     else:
         fig, axes = ctx.layout(panels)
     labels = [regime_names.get(index, f"State {index}") for index in range(n)]

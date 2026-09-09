@@ -25,13 +25,11 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from analysis.modules.rhythms import _detrend, _surrogate, cosinor  # noqa: E402
-
 from _options import commas  # noqa: E402
 
-__all__ = ["_aligned_curves", "_cycle_fit", "_regime_labels", "_regime_rows",
+__all__ = ["_aligned_curves", "_regime_labels", "_regime_rows",
            "_require_columns", "_scaled_field", "_selected_identities",
-           "_test_channel", "_transition_curves"]
+           "_transition_curves"]
 
 
 def _require_columns(frame: pd.DataFrame, columns, table: str, module: str) -> None:
@@ -61,7 +59,11 @@ def _require_columns(frame: pd.DataFrame, columns, table: str, module: str) -> N
 #: state comes back from cell_frame as a float, because the rows without one
 #: are blank; it has to go back to being an integer before anything indexes a
 #: colour or a label with it.
-_REGIME_COLUMNS = ("regime", "regime_distance", "regime_second", "regime_margin")
+_REGIME_COLUMNS = (
+    "regime", "regime_label", "regime_size_level", "regime_movement_level",
+    "regime_size_percentile", "regime_movement_percentile",
+    "regime_distance", "regime_second", "regime_margin",
+)
 _REGIME_INTEGERS = ("regime", "regime_second")
 
 
@@ -101,7 +103,9 @@ _REGIME_TRAITS: dict[str, tuple[str, str]] = {
 
 
 def _regime_labels(profiles: pd.DataFrame) -> dict[int, str]:
-    """Name each numbered cluster by its strongest relative measurement."""
+    """Name each numbered subgroup from its declared levels when available."""
+    if "regime_label" in profiles:
+        return dict(zip(profiles["regime"].astype(int), profiles["regime_label"].astype(str)))
     features = [column for column in _REGIME_TRAITS if column in profiles]
     if not features:
         return {int(value): f"State {int(value)}" for value in profiles["regime"]}
@@ -123,41 +127,28 @@ def _aligned_curves(aligned: pd.DataFrame, metrics: list[str]) -> tuple[pd.DataF
     matrices = {}
     rows = []
     for metric in metrics:
-        pivot = aligned.pivot_table(index="identity", columns="offset_frames", values=metric).reindex(columns=offsets)
+        if aligned.empty:
+            matrices[metric] = np.empty((0, 0), dtype=float)
+            continue
+        # One cell may now contribute several independently ranked events. The
+        # event rank is part of the observational unit; indexing only by cell
+        # would average those events together before the plotted mean is made.
+        units = ["identity"]
+        if "event_rank" in aligned:
+            units.append("event_rank")
+        pivot = aligned.pivot_table(
+            index=units, columns="offset_frames", values=metric
+        ).reindex(columns=offsets)
         values = pivot.to_numpy(float)
         matrices[metric] = values
         if values.size:
             mean = np.nanmean(values, axis=0)
             lo, hi = np.nanpercentile(values, [25, 75], axis=0)
             rows.extend({"metric": metric, "offset_frames": int(offset), "mean_z": m,
-                         "lo": l, "hi": h, "cells": int(np.sum(np.isfinite(values[:, index])))}
+                         "lo": l, "hi": h,
+                         "events": int(np.sum(np.isfinite(values[:, index])))}
                         for index, (offset, m, l, h) in enumerate(zip(offsets, mean, lo, hi)))
     return pd.DataFrame(rows), matrices, offsets
-
-
-def _cycle_fit(hours: np.ndarray, values: np.ndarray, period: float) -> dict:
-    if len(hours) < 4 or np.allclose(values, values[0]):
-        return {}
-    detrended = _detrend(hours, values, "linear")
-    return cosinor(hours, detrended, period, float(np.mean(np.abs(values))))
-
-
-def _test_channel(hours: np.ndarray, values: np.ndarray, period: float,
-                  generator: np.random.Generator, surrogates: int = 50) -> dict:
-    usable = np.isfinite(hours) & np.isfinite(values)
-    hours, values = hours[usable], values[usable]
-    if len(values) < 8 or np.allclose(values, values[0]):
-        return {}
-    detrended = _detrend(hours, values, "linear")
-    observed = cosinor(hours, detrended, period, float(np.mean(np.abs(values))))
-    null_amplitudes = []
-    for _ in range(surrogates):
-        fake = _surrogate(detrended, "ar1", generator)
-        fit = cosinor(hours, fake, period, float(np.mean(np.abs(values))))
-        if fit:
-            null_amplitudes.append(fit["cosinor_relative_amplitude"])
-    observed["surrogate_amplitude"] = float(np.mean(null_amplitudes)) if null_amplitudes else np.nan
-    return observed
 
 
 def _transition_curves(joined: pd.DataFrame, metric: str, window: int,

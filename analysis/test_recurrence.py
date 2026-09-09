@@ -22,7 +22,8 @@ METRICS = ["area_px", "circularity", "solidity", "ramification_index",
            "step_px_gapless", "punctateness"]
 
 
-def _context(minutes: float = 30.0, params: dict | None = None) -> MeasurementContext:
+def _context(minutes: float = 30.0, params: dict | None = None,
+             rhythm_params: dict | None = None) -> MeasurementContext:
     """The little of a context a derived module actually reads.
 
     A derived module never opens an image, so the label stack here exists only
@@ -35,7 +36,8 @@ def _context(minutes: float = 30.0, params: dict | None = None) -> MeasurementCo
         raw=np.zeros((2, 2, 2), dtype=np.uint16),
         scale=Scale(minutes),
         identities=[1],
-        params={"recurrence": dict(params or {})},
+        params={"recurrence": dict(params or {}),
+                "rhythms": dict(rhythm_params or {})},
     )
 
 
@@ -189,6 +191,21 @@ def test_the_lag_axis_is_capped_by_the_setting_and_by_the_cell() -> None:
     short = derive(_cell_frame({1: np.linspace(0, 4, 5)}),
                    _context(params={"surrogates": 3, "max_lag_hours": 12.0}))
     assert sorted(short["recurrence"]["lag_frames"]) == [1, 2, 3, 4]
+
+
+def test_recurrence_inherits_and_records_the_main_detrending_choice() -> None:
+    frame = _cell_frame({1: np.sin(np.arange(12, dtype=float))})
+    tables = derive(
+        frame,
+        _context(
+            params={"surrogates": 3},
+            rhythm_params={"detrend": "none", "detrend_window_hours": 7.5},
+        ),
+    )
+
+    for table in tables.values():
+        assert set(table["detrend"]) == {"none"}
+        assert set(table["detrend_window_hours"]) == {7.5}
 
 
 def test_a_cells_noise_band_does_not_depend_on_which_other_cells_were_measured() -> None:

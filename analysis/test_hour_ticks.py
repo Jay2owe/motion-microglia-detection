@@ -30,7 +30,7 @@ def test_a_day_is_the_default_step():
 
 
 def test_a_two_day_recording_gets_a_tick_per_day():
-    assert THEME.hour_ticks(0.5, 49.0) == [24.0, 48.0]
+    assert THEME.hour_ticks(0.5, 49.0) == [0.0, 24.0, 48.0]
 
 
 def test_ticks_start_at_zero_when_the_axis_does():
@@ -45,7 +45,7 @@ def test_a_tick_exactly_on_the_limit_is_kept():
 def test_hours_that_are_not_quite_round_still_land_on_the_day():
     """Frame intervals give hours like 24.000000001; the tick is still 24."""
     ticks = THEME.hour_ticks(0.4999999, 48.0000001)
-    assert ticks == [24.0, 48.0]
+    assert ticks == [0.0, 24.0, 48.0]
 
 
 # ------------------------------------------------------------- other steps
@@ -101,6 +101,12 @@ def test_a_bad_step_stops_the_configuration_rather_than_the_figure():
 
 def test_the_step_is_recorded_with_the_run():
     assert load_theme({"hours_per_tick": 6}).stamp()["hours_per_tick"] == 6.0
+
+
+def test_the_time_tick_origin_can_be_set_in_the_theme_block():
+    theme = load_theme({"theme": {"hours_per_tick": 12, "hours_tick_start": 6}})
+    assert theme.hour_ticks(7, 31) == [6.0, 18.0, 30.0]
+    assert theme.stamp()["hours_tick_start"] == 6.0
 
 
 # --------------------------------------------------------- the command line

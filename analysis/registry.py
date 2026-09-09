@@ -324,6 +324,13 @@ class DerivedModule:
     defaults: dict = field(default_factory=dict)
     produces: tuple[Column, ...] = ()
     writes: tuple[Output, ...] = ()
+    resolve_params: Callable[[MeasurementContext], dict] | None = None
+
+    def parameters(self, context: MeasurementContext) -> dict:
+        """The effective settings used by this module for one recording."""
+        if self.resolve_params is not None:
+            return dict(self.resolve_params(context))
+        return {**self.defaults, **context.module_params(self.name)}
 
 
 _REGISTRY: dict[str, AnalysisModule] = {}
@@ -337,6 +344,7 @@ def register_derived(
     defaults: dict | None = None,
     produces: Iterable[Column] = (),
     writes: Iterable[Output] = (),
+    resolve_params: Callable[[MeasurementContext], dict] | None = None,
 ) -> Callable:
     """Decorate a function that turns the joined cell-frame table into more tables."""
 
@@ -349,6 +357,7 @@ def register_derived(
             defaults=dict(defaults or {}),
             produces=tuple(produces),
             writes=tuple(writes),
+            resolve_params=resolve_params,
         )
         return function
 

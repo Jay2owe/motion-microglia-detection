@@ -717,7 +717,10 @@ def correct_delayed_bookend_runs(
     event_rows: list[dict] = []
     frame_rows: list[dict] = []
     skipped = skip_run_ids or set()
-    for event in detected[detected.bookend_eligible].itertuples():
+    eligible = (detected["bookend_eligible"]
+                if "bookend_eligible" in detected.columns
+                else np.zeros(len(detected), bool))
+    for event in detected[eligible].itertuples():
         if str(event.run_id) in skipped:
             continue
         donor = int(event.bookend_identity)

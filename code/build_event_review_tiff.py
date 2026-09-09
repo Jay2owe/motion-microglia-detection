@@ -25,7 +25,7 @@ from common import display_raw, label_edges, save_rgb_stack, sha256, write_json
 from review_rendering import header, unique_outline
 
 
-RENDERER_VERSION = 1
+RENDERER_VERSION = 2
 HEADER_HEIGHT = 24
 RED = (255, 45, 45)
 ORANGE = (255, 170, 20)
@@ -231,6 +231,16 @@ def _fingerprint(value: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _staging_parent(output_dir: Path,
+                    system_temp: Path | None = None) -> Path | None:
+    """Choose same-volume staging when system temp is on another drive."""
+    temp = (Path(tempfile.gettempdir()) if system_temp is None
+            else Path(system_temp)).resolve()
+    output = Path(output_dir).resolve()
+    return None if temp.drive.casefold() == output.drive.casefold() \
+        else output.parent
+
+
 def _verified_existing(output_dir: Path,
                        fingerprint: str) -> dict[str, Any] | None:
     manifest_path = output_dir / "event_review_manifest.json"
@@ -312,8 +322,11 @@ def build_event_review_bundle(
             "events_before": len(baseline), "events_after": len(candidate),
         }
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_parent = _staging_parent(output_dir)
+    temp_options = {} if staging_parent is None else {"dir": staging_parent}
     with tempfile.TemporaryDirectory(
-            prefix=f"motion-event-review-{output_dir.name}-staging-") as temp:
+            prefix=f"motion-event-review-{output_dir.name}-staging-",
+            **temp_options) as temp:
         bundle = Path(temp) / "bundle"
         bundle.mkdir()
         full, summary = render_event_comparison_arrays(
@@ -371,7 +384,9 @@ def build_event_review_bundle(
             "outputs": outputs,
             "operation": {
                 "mutations": "new files inside output_dir only",
-                "staging": "system temp outside synchronized output tree",
+                "staging": ("system temp on the output volume"
+                            if staging_parent is None
+                            else "temporary sibling on the output volume"),
                 "idempotency": "same fingerprint is verified and reused",
                 "partial_success": "staging is discarded",
             },

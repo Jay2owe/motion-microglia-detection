@@ -2,11 +2,13 @@
 
     python analysis/figures/build_all.py outputs/a03_my_run
 
-Two kinds of build. The default is the audited one: each builder writes a
+Two kinds of output. The default is the audited one: each builder writes a
 plot-that bundle to ``<run>/figures/<slug>/`` - the figure, the exact table it
 was drawn from, copies of every source with its hash, and a README.
 
     python analysis/figures/build_all.py outputs/a03_my_run --draft
+    python analysis/figures/build_all.py outputs/a03_my_run --results-only
+    python analysis/figures/build_all.py outputs/a03_my_run --review-only
 
 A draft writes the figures and nothing else, flat, into ``outputs/figures/``,
 over the top of the last round. That is the loop for deciding what a plot should
@@ -16,9 +18,8 @@ settled - a draft is not checkable and is not meant to leave the machine.
 
 **Only the arguments every figure shares are passed through** - ``--stem`` and
 the switches. A figure's own options belong to that figure: ``--bins`` means
-something on six of the thirty-six and nothing on the rest, and passing it to
-all of them would be refused by thirty of them and silently wrong on none, which
-is worse than saying so here. Set a figure's options in the ``figures`` block of
+something on histogram figures and nothing on the rest, and passing it to
+all of them would be refused wherever it has no meaning. Set a figure's options in the ``figures`` block of
 the analysis configuration, where they survive into the run folder, or run that
 one builder directly:
 
@@ -27,6 +28,10 @@ one builder directly:
 Registering a bundle is a separate, deliberate step and is not done here:
 
     python ~/.claude/skills/plot-that/scripts/register.py add <bundle> --claim "..."
+
+By default both scientific result figures and audit/review figures are built.
+``--results-only`` and ``--review-only`` select one source module without
+passing that launcher-only choice into the individual builders.
 """
 
 from __future__ import annotations
@@ -36,18 +41,21 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BUILDERS = sorted(p for p in HERE.glob("[0-9][0-9]_*.py"))
 
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from _builders import builder_files, is_review_builder  # noqa: E402
 from _options import skip_tokens  # noqa: E402
+
+BUILDERS = builder_files()
 
 #: What means the same thing to every figure, and so may be given to all of them:
 #: which movie to draw, and the switches every figure honours. Written out rather
 #: than imported so that building does not pull matplotlib into this launcher;
 #: `test_figure_schema` checks it still matches `_schema.UNIVERSAL_SWITCHES`.
 SHARED = {"stem", "draft"}
+SCOPE_SWITCHES = {"results_only", "review_only"}
 
 
 def partition(arguments: list[str]) -> tuple[list[str], list[str]]:
@@ -73,13 +81,22 @@ def main() -> int:
     positional = [a for a in arguments if not a.startswith("--")]
     if not positional:
         raise SystemExit(
-            "usage: python build_all.py <path to an analysis run folder> [--draft]"
+            "usage: python build_all.py <path to an analysis run folder> "
+            "[--draft] [--results-only | --review-only]"
         )
     run = Path(positional[0]).resolve()
     if not run.is_dir():
         raise SystemExit(f"not a run folder: {run}")
 
-    passthrough, personal = partition([a for a in arguments if a != positional[0]])
+    selected_scopes = {token[2:].replace("-", "_") for token in arguments
+                       if token.startswith("--") and
+                       token[2:].replace("-", "_") in SCOPE_SWITCHES}
+    if len(selected_scopes) > 1:
+        raise SystemExit("--results-only and --review-only cannot be used together")
+    figure_arguments = [a for a in arguments
+                        if a != positional[0] and
+                        a[2:].replace("-", "_") not in SCOPE_SWITCHES]
+    passthrough, personal = partition(figure_arguments)
     if personal:
         named = " ".join(a for a in personal if a.startswith("--"))
         raise SystemExit(
@@ -94,8 +111,14 @@ def main() -> int:
         )
     draft = "--draft" in passthrough
 
+    builders = BUILDERS
+    if "results_only" in selected_scopes:
+        builders = [path for path in builders if not is_review_builder(path)]
+    elif "review_only" in selected_scopes:
+        builders = [path for path in builders if is_review_builder(path)]
+
     failures = []
-    for builder in BUILDERS:
+    for builder in builders:
         print(f"--- {builder.name}")
         result = subprocess.run([sys.executable, str(builder), str(run), *passthrough])
         if result.returncode != 0:
@@ -108,7 +131,7 @@ def main() -> int:
     where = run.parent / "figures" if draft else run / "figures"
     kind = "draft figure(s)" if draft else "bundle(s)"
     print()
-    print(f"{len(BUILDERS)} {kind} written to {where}")
+    print(f"{len(builders)} {kind} written to {where}")
     return 0
 
 

@@ -36,10 +36,10 @@ default, so the table holds every pair of classified cells and
 ``alignment_overlap_steps`` is what says which distances rest on shared frames.
 On the pinned movie 95 of 3,828 pairs have no overlap at all.
 
-**Regime numbers are cluster labels.** They mean nothing outside the run that
-made them, so this table cannot be compared across runs unless both were
-clustered with the same seed. ``regimes`` is seeded (``random_state``), so two
-runs of the same movie agree; two different movies do not share a state 2.
+**Regime numbers are crossed category labels.** Zero is low size and low
+movement, eight is high size and high movement, with movement changing fastest.
+The meaning is stable across runs, although the quantile thresholds are fitted
+within each run and must be read before comparing absolute sizes or steps.
 """
 
 from __future__ import annotations

@@ -32,16 +32,12 @@ contrasts are *scalar metrics per unit*, so the calling shape does not
 transfer and calling it would make every contrast a one-bin ANOVA with its
 sphericity machinery idling.
 
-What does transfer is its guards, and they are copied with the source line
-cited: ``_hedges_g`` and the scale-relative variance noise floor it rests on
-(``analysis.py`` lines 3577 and 3528), the refusal when a group has fewer than
-three units (line 3704), the Bonferroni and Sidak corrections (line 3511), and
-the aggregation of everything sharing a subject id to one value before testing,
-which its own docstring cites as the Lazic 2010 / Hughes 2017 unit-of-analysis
-guard. ``analysis/test_contrasts.py`` runs Hedges' g and both corrections
-through this module and through the workbench and requires the same answer -
-skipped rather than failed when the workbench is absent, so it is a check and
-not a dependency.
+What does transfer is its guards. Hedges' g, the scale-relative variance noise
+floor, the three-unit minimum, degenerate-data guard, and Bonferroni/Sidak
+corrections are imported from ``circadian_workbench.statistics``. The scalar
+tests and the aggregation of everything sharing a subject identifier remain
+here because they belong to this package's contrast table rather than a
+circadian profile.
 """
 
 from __future__ import annotations
@@ -53,15 +49,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy import stats
+from circadian_workbench import statistics as workbench_statistics
 
 from analysis.config import AnalysisConfig, ContrastConfig
 from analysis.pool import MEASURED_FOLDER, POOLED_FOLDER
 
 #: Fewer units than this in any group and no p-value is written, only the
-#: reason. Copied from ``circadian_workbench.analysis._small_n_result``
-#: (analysis.py:3704), which refuses at the same count for the same reason: with
+#: reason. Shared with ``circadian_workbench.statistics.MIN_GROUP_SIZE``: with
 #: two units a difference is a pair of numbers, not evidence.
-MIN_UNITS = 3
+MIN_UNITS = workbench_statistics.MIN_GROUP_SIZE
 
 #: The written file. One row per result, never one column per contrast, and
 #: shaped so it is `plot-that`'s ``data/der/statistics.csv`` without renaming.
@@ -101,46 +97,8 @@ UNIT_KEYS = {
 # --------------------------------------------------------------- effect sizes
 
 
-def _variance_noise_floor(*samples) -> float:
-    """Variance below which a within-group spread is floating-point dust.
-
-    Copied from ``circadian_workbench.analysis._variance_noise_floor``
-    (analysis.py:3528). Scale-relative rather than an absolute ``== 0`` test,
-    because catastrophic cancellation defeats the absolute one: on a cohort of
-    identical values the exact zeros cancel to about 1e-29 rather than to zero,
-    and an effect size of -1.3e14 reached a figure legend before this existed.
-    """
-    parts = [np.asarray(s, dtype=float).ravel() for s in samples]
-    pooled = np.concatenate(parts) if parts else np.empty(0, dtype=float)
-    pooled = pooled[np.isfinite(pooled)]
-    scale = float(np.max(np.abs(pooled))) if pooled.size else 0.0
-    sd_tol = max(scale, 1.0) * 1e-12
-    return sd_tol * sd_tol
-
-
-def hedges_g(x, y) -> float:
-    """Two-sample Hedges' g with the small-sample bias correction J.
-
-    Copied from ``circadian_workbench.analysis._hedges_g`` (analysis.py:3577).
-    NaN when either sample has fewer than two finite observations or when the
-    pooled variance is at or below the numerical noise floor.
-    """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    x = x[np.isfinite(x)]
-    y = y[np.isfinite(y)]
-    n1, n2 = int(x.size), int(y.size)
-    if n1 < 2 or n2 < 2:
-        return float("nan")
-    s1 = float(np.var(x, ddof=1))
-    s2 = float(np.var(y, ddof=1))
-    sp2 = ((n1 - 1) * s1 + (n2 - 1) * s2) / (n1 + n2 - 2)
-    if not np.isfinite(sp2) or sp2 <= _variance_noise_floor(x, y):
-        return float("nan")
-    d = (float(np.mean(x)) - float(np.mean(y))) / math.sqrt(sp2)
-    dof = n1 + n2 - 2
-    correction = 1.0 - 3.0 / (4.0 * dof - 1.0)
-    return float(correction * d)
+_variance_noise_floor = workbench_statistics.variance_noise_floor
+hedges_g = workbench_statistics.hedges_g
 
 
 def paired_hedges_g(differences) -> float:
@@ -253,6 +211,25 @@ def _paired_t(groups: list[np.ndarray]) -> tuple[float, float]:
     return float(result.statistic), float(result.pvalue)
 
 
+def _signed_rank(groups: list[np.ndarray]) -> tuple[float, float]:
+    """One group against zero, which is a comparison and not a description.
+
+    A slope, a change and a difference all have a meaningful zero: no drift, no
+    change, no difference. Asking whether a set of them sits away from zero is a
+    real question and the only shape of question a single-group table supports.
+    It is the same arithmetic as the paired test - that one subtracts to get a
+    single column first - so the two share a name in the literature and are kept
+    apart here by what they are given.
+    """
+    result = stats.wilcoxon(groups[0])
+    return float(result.statistic), float(result.pvalue)
+
+
+def _median_against_zero(values: np.ndarray) -> float:
+    """How far the middle of one group sits from zero, in the metric's own unit."""
+    return float(np.nanmedian(values))
+
+
 #: The small honest set. Which test is run is a declared setting and never a
 #: property of the data: running a normality test and choosing accordingly is a
 #: garden of forking paths with a friendly face.
@@ -287,9 +264,20 @@ TESTS = {
         "effect": None, "effect_kind": "hedges_g_paired",
         "label": "paired t",
     },
+    "signed_rank": {
+        "run": _signed_rank, "groups": 1, "paired": False,
+        "effect": _median_against_zero, "effect_kind": "median_against_zero",
+        "label": "Wilcoxon signed-rank against zero",
+    },
 }
 
 PAIRED_TESTS = tuple(name for name, spec in TESTS.items() if spec["paired"])
+
+#: Tests that take one group and compare it against zero rather than against
+#: another group. Named here so the configuration can refuse a second group for
+#: them, which would otherwise parse and then be silently ignored.
+SINGLE_GROUP_TESTS = tuple(name for name, spec in TESTS.items()
+                           if spec["groups"] == 1)
 
 
 # ---------------------------------------------------------------- corrections
@@ -321,33 +309,15 @@ def _benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
 
 
 def _bonferroni(p_values: np.ndarray) -> np.ndarray:
-    """Copied from ``circadian_workbench.analysis._apply_pointwise_correction``
-    (analysis.py:3511)."""
-    p = np.asarray(p_values, dtype=float)
-    out = p.copy()
-    finite = np.isfinite(p)
-    m = int(finite.sum())
-    if m <= 0:
-        return out
-    out[finite] = np.minimum(p[finite] * m, 1.0)
-    return out
+    return workbench_statistics.adjust_pvalues(p_values, "bonferroni")
 
 
 def _sidak(p_values: np.ndarray) -> np.ndarray:
-    """Copied from the same function as :func:`_bonferroni`."""
-    p = np.asarray(p_values, dtype=float)
-    out = p.copy()
-    finite = np.isfinite(p)
-    m = int(finite.sum())
-    if m <= 0:
-        return out
-    clipped = np.clip(p[finite], 0.0, 1.0)
-    out[finite] = 1.0 - np.power(1.0 - clipped, m)
-    return out
+    return workbench_statistics.adjust_pvalues(p_values, "sidak")
 
 
 def _uncorrected(p_values: np.ndarray) -> np.ndarray:
-    return np.asarray(p_values, dtype=float).copy()
+    return workbench_statistics.adjust_pvalues(p_values, "none")
 
 
 CORRECTIONS = {
@@ -507,8 +477,8 @@ def _one_result(contrast: ContrastConfig, metric: str, rows: pd.DataFrame,
         values = [by_group[group]["value"].to_numpy(float) for group in contrast.groups]
         cells = [int(by_group[group]["cells"].sum()) for group in contrast.groups]
 
-    if all(np.allclose(block, block[0]) for block in values):
-        # Copied from ``circadian_workbench.analysis._degenerate_bin``: only
+    if workbench_statistics.is_degenerate(values):
+        # Shared with ``circadian_workbench.statistics.is_degenerate``: only
         # *every* group being flat is a refusal, because one flat group against
         # one with real spread still gives a well-defined pooled variance. With
         # none of them having any, a t or an F is a 0/0 artefact that evaluates
@@ -554,17 +524,20 @@ def _one_result(contrast: ContrastConfig, metric: str, rows: pd.DataFrame,
     # they were the comparison. `n_per_group` is always written, so the group
     # sizes - which are what decide whether the p-value means anything - are on
     # every row whatever the shape of the test.
+    # A one-group test has an `a` and no `b`: the comparison is against zero,
+    # which is not a group and must not be written as though it were one.
     pair = len(values) == 2
+    named = pair or len(values) == 1
     row = _blank_row(contrast, metric, "")
     row.update({
-        "group_a": contrast.groups[0] if pair else "",
+        "group_a": contrast.groups[0] if named else "",
         "group_b": contrast.groups[1] if pair else "",
         "n_groups": len(values),
         "n_units": n_units,
         "n_per_group": "+".join(f"{group}={count}" for group, count in counts.items()),
-        "n_a": len(values[0]) if pair else "",
+        "n_a": len(values[0]) if named else "",
         "n_b": len(values[1]) if pair else "",
-        "cells_a": cells[0] if pair else "",
+        "cells_a": cells[0] if named else "",
         "cells_b": cells[1] if pair else "",
         "statistic": statistic,
         "p_value": p_value,

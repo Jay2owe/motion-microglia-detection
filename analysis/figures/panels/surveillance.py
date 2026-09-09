@@ -28,7 +28,7 @@ from ._contract import PanelResult
 __all__ = [
     "EVIDENCE_CHANNELS", "evidence_channels", "exchange_ledger",
     "cancelled_fraction", "mirrored_ledger", "boundary_reference",
-    "upheaval_raster", "breakout_events",
+    "low_overlap_event_raster", "upheaval_raster", "ranked_events", "event_timing",
 ]
 
 #: column -> (colour role, what to call it). The default three: what stayed,
@@ -220,6 +220,13 @@ def mirrored_ledger(
     ax.set_xticks(theme.hour_ticks(float(hours.min()), float(hours.max()), hour_ticks))
     ax.set_xlabel("Hours from start of recording")
     ax.set_ylabel(y_label)
+    visible = [gained, lost, net]
+    if show_held and held_column in frame:
+        visible.append(held)
+    finite = np.concatenate(visible)
+    finite = finite[np.isfinite(finite)]
+    if finite.size:
+        theme.set_value_ticks(ax, low=float(finite.min()), high=float(finite.max()))
     result = pd.DataFrame({
         "hours": hours, "gained_px": gained, "lost_px": -lost,
         "held_px": np.asarray(frame[held_column], dtype=float) if held_column in frame else np.nan,
@@ -260,7 +267,7 @@ def boundary_reference(
                        extra={"curves": np.asarray(curves)})
 
 
-def upheaval_raster(
+def low_overlap_event_raster(
     ax: Any,
     frame: pd.DataFrame,
     theme: Any,
@@ -270,9 +277,8 @@ def upheaval_raster(
     order: Sequence[Any] | None = None,
     hour_ticks: float | None = None,
     y_label: str = "Cell, ordered by first appearance",
-    event_label: str | None = None,
 ) -> PanelResult:
-    """Marks each low-overlap transition; returns those event rows."""
+    """Mark transitions whose same-cell footprint overlap is below a threshold."""
     data = frame.dropna(subset=[jaccard_column, "hours", "identity"]).copy()
     threshold = float(data[jaccard_column].quantile(0.05)) if threshold is None else float(threshold)
     events = data[data[jaccard_column] <= threshold].copy()
@@ -281,53 +287,137 @@ def upheaval_raster(
     )
     row = {identity: index for index, identity in enumerate(identities)}
     events["row_order"] = events["identity"].map(row)
+    spans = data.groupby("identity", sort=False)["hours"].agg(["min", "max"])
+    for identity in identities:
+        if identity not in spans.index:
+            continue
+        y = row[identity]
+        ax.plot(
+            [spans.loc[identity, "min"], spans.loc[identity, "max"]], [y, y],
+            color=theme.colour("missing"), linewidth=theme.stroke("hairline"),
+            alpha=0.6, solid_capstyle="round", zorder=1,
+        )
     ax.scatter(events["hours"], events["row_order"], color=theme.colour("highlight"),
-               s=theme.point_area(0.8), marker="|", label="Low-overlap event")
+               s=theme.point_area(0.8), marker="|", zorder=2)
     ax.set_xlim(float(data["hours"].min()), float(data["hours"].max()))
     ax.set_ylim(len(identities) - 0.5, -0.5)
     ax.set_xticks(theme.hour_ticks(float(data["hours"].min()), float(data["hours"].max()), hour_ticks))
     ax.set_xlabel("Hours from start of recording")
     ax.set_ylabel(y_label)
-    meaning = event_label or jaccard_column
-    ax.text(0.99, 0.98, f"Event: {meaning} ≤ {threshold:.3g}",
-            transform=ax.transAxes, ha="right", va="top", fontsize=theme.size("caption"))
     events["event_threshold"] = threshold
     return PanelResult(data=events, axes=ax)
 
 
-def breakout_events(
+def upheaval_raster(*args: Any, **kwargs: Any) -> PanelResult:
+    """Compatibility alias for :func:`low_overlap_event_raster`."""
+    kwargs.pop("event_label", None)
+    return low_overlap_event_raster(*args, **kwargs)
+
+
+EVENT_DIRECTIONS = ("high", "low", "deviation")
+
+
+def ranked_events(
     frame: pd.DataFrame,
     *,
-    column: str = "cancelled_fraction",
+    column: str,
+    direction: str = "high",
     per_cell: bool = True,
-    rank: int = 1,
+    rank_start: int = 1,
+    top_n: int = 1,
     window: int = 12,
 ) -> pd.DataFrame:
-    """Align rows on each cell's ranked excursion outside its own IQR."""
+    """Rows around explicitly ranked values of one measured column.
+
+    ``high`` ranks the largest raw values, ``low`` the smallest, and
+    ``deviation`` the largest absolute distance from that cell's median in
+    interquartile-range units. The source value and ranking rule travel on
+    every aligned row, so a figure cannot call an event merely "large" without
+    retaining what was large and how it was ordered.
+    """
     data = frame.copy()
-    if column not in data and column == "cancelled_fraction":
-        gross = data["gained_px"].astype(float) + data["lost_px"].astype(float)
-        data[column] = np.where(gross > 0, 1 - data["area_change_px"].abs() / gross, np.nan)
+    if column not in data:
+        raise KeyError(f"event metric {column!r} is not present")
+    if direction not in EVENT_DIRECTIONS:
+        raise ValueError(
+            f"event direction must be {', '.join(EVENT_DIRECTIONS)}, not {direction!r}"
+        )
+    if int(rank_start) < 1 or int(top_n) < 1 or int(window) < 0:
+        raise ValueError("rank_start and top_n must be positive; window cannot be negative")
     groups = data.groupby("identity", sort=True) if per_cell else [("all", data)]
     aligned = []
     for identity, group in groups:
         group = group.sort_values("frame_index")
-        values = group[column].astype(float)
-        q1, q3 = values.quantile([0.25, 0.75])
-        centre = float(values.median())
-        scale = float(q3 - q1) or 1.0
-        score = (values - centre).abs() / scale
-        candidates = score.sort_values(ascending=False)
-        if len(candidates) < int(rank):
-            continue
-        event_index = candidates.index[int(rank) - 1]
-        event_frame = int(group.loc[event_index, "frame_index"])
-        piece = group[
-            group["frame_index"].between(event_frame - int(window), event_frame + int(window))
-        ].copy()
-        piece["event_frame_index"] = event_frame
-        piece["offset_frames"] = piece["frame_index"].astype(int) - event_frame
-        piece["event_rank"] = int(rank)
-        piece["event_score"] = float(score.loc[event_index])
-        aligned.append(piece)
-    return pd.concat(aligned, ignore_index=True) if aligned else pd.DataFrame()
+        values = pd.to_numeric(group[column], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        centre = scale = np.nan
+        if direction == "deviation":
+            q1, q3 = values.quantile([0.25, 0.75])
+            centre = float(values.median())
+            scale = float(q3 - q1)
+            scale = scale if np.isfinite(scale) and scale > 0 else 1.0
+            score = (values - centre).abs() / scale
+        elif direction == "low":
+            score = -values
+        else:
+            score = values
+        candidates = score.dropna().sort_values(ascending=False, kind="stable")
+        start = int(rank_start) - 1
+        chosen = candidates.iloc[start:start + int(top_n)]
+        for offset, (event_index, event_score) in enumerate(chosen.items()):
+            event_rank = int(rank_start) + offset
+            event_frame = int(group.loc[event_index, "frame_index"])
+            piece = group[
+                group["frame_index"].between(
+                    event_frame - int(window), event_frame + int(window)
+                )
+            ].copy()
+            piece["event_frame_index"] = event_frame
+            piece["event_hours"] = float(group.loc[event_index, "hours"])
+            piece["offset_frames"] = piece["frame_index"].astype(int) - event_frame
+            piece["event_rank"] = event_rank
+            piece["event_metric"] = str(column)
+            piece["event_direction"] = str(direction)
+            piece["event_value"] = float(values.loc[event_index])
+            piece["event_score"] = float(event_score)
+            piece["event_centre"] = centre
+            piece["event_scale"] = scale
+            aligned.append(piece)
+    if aligned:
+        return pd.concat(aligned, ignore_index=True)
+    empty = data.iloc[0:0].copy()
+    for name in (
+        "event_frame_index", "event_hours", "offset_frames", "event_rank",
+        "event_metric", "event_direction", "event_value", "event_score",
+        "event_centre", "event_scale",
+    ):
+        empty[name] = pd.Series(dtype="object")
+    return empty
+
+
+def event_timing(
+    ax: Any,
+    aligned: pd.DataFrame,
+    theme: Any,
+    *,
+    hour_column: str = "event_hours",
+    identity_column: str = "identity",
+    label: str = "Selected event frames",
+    x_label: str = "Selected-frame time from recording start (h)",
+    y_label: str = "Cell identity",
+) -> PanelResult:
+    """When each unique ranked frame occurred, one mark per cell-frame."""
+    columns = [identity_column, "event_rank", "event_frame_index", hour_column,
+               "event_metric", "event_direction", "event_value", "event_score"]
+    columns = [name for name in columns if name in aligned]
+    events = aligned[columns].drop_duplicates().copy()
+    if not events.empty:
+        ax.scatter(
+            events[hour_column], events[identity_column],
+            color=theme.colour("highlight"), s=theme.point_area(0.8),
+            label=label,
+        )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    return PanelResult(data=events, axes=ax)

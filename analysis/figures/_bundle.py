@@ -65,11 +65,29 @@ def draft_root(run: Path) -> Path:
     return Path(run).parent / "figures"
 
 
-def bundle_for(run: Path, slug: str) -> Path:
-    """The folder this build works in: the run's audited bundle, or scratch."""
+def flat(name: str) -> str:
+    """A name usable as a filename: ``a/b=c`` becomes ``a_b=c``.
+
+    An item of a plot plan may be called ``rhythm-strength/metrics=m10``. As a
+    bundle that is a nested folder and needs nothing done to it. As a *file* it
+    cannot keep the separator, so the figure inside a bundle and every figure in
+    a draft folder is written flat - the bundle's folder is what carries the
+    item's identity, and the file only has to be unambiguous.
+    """
+    return str(name).replace("/", "_").replace("\\", "_")
+
+
+def bundle_for(run: Path, name: str) -> Path:
+    """The folder this build works in: the run's audited bundle, or scratch.
+
+    ``name`` is the item of the run's plot plan being drawn, or the figure's
+    slug when nothing is drawing a plan. Making the item the unit rather than
+    the slug is what lets one figure be drawn several ways into one run folder
+    without the second overwriting the first.
+    """
     if drafting():
-        return DRAFT_SCRATCH / slug
-    return Path(run) / "figures" / slug
+        return DRAFT_SCRATCH / flat(name)
+    return Path(run) / "figures" / str(name)
 
 
 def figure_path(run: Path, bundle: Path, name: str) -> Path:
@@ -206,6 +224,37 @@ def wrap_title(theme, figure, text: str) -> str:
         if max(len(head) + 1, len(tail)) <= budget:
             return f"{head};\n{tail}"
     return "\n".join(textwrap.wrap(text, budget))
+
+
+#: One line break. Named because writing it inline inside this module keeps
+#: tripping heredoc-driven edits into producing a real newline in the source.
+NEWLINE = chr(10)
+
+
+def wrap_footnote(theme, figure, text: str, size_key: str = "note") -> str:
+    """A footnote broken to fit the canvas, line by line.
+
+    The same problem ``wrap_title`` solves, one font size down and with a
+    subtlety: a footnote is several sentences and already carries its own
+    newlines, so each existing line is wrapped on its own rather than the whole
+    block being reflowed. Reflowing would run two separate caveats together.
+
+    Without this a builder can silently widen the page. The saved PNG is
+    written with a tight bounding box, so one long unbroken caption stretches
+    the sheet to fit itself and every panel ends up squeezed into the left
+    third of an image nobody asked to be that shape.
+
+    ``size_key`` is which text size to budget against; the subtitle is set one
+    step larger than a footnote and needs a shorter line to fill the same width.
+    """
+    import textwrap
+
+    inches = float(figure.get_size_inches()[0])
+    budget = max(40, int((inches * 72 * 0.94) / (0.50 * theme.size(size_key))))
+    lines = []
+    for line in text.split(NEWLINE):
+        lines.extend(textwrap.wrap(line, budget) or [""])
+    return NEWLINE.join(lines)
 
 
 def module_params(run: Path, module: str, stem: str | None = None) -> dict:
@@ -345,7 +394,8 @@ def write_readme(bundle: Path, title: str, text, body: str) -> Path:
     lines += [
         "",
         "`default` means the builder's own descriptive wording. `config` means the "
-        "`figures` block of the run's `figures.json`; `flag` means a command-line "
+        "`figures` block of the run's `figures.json`; `item` means the one entry "
+        "of the run's plot plan this drawing is; `flag` means a command-line "
         "option on this build.",
         "",
     ]
@@ -375,15 +425,81 @@ def run_folder(default: str | None = None) -> Path:
     raise SystemExit("usage: python <figure script> <path to an analysis run folder>")
 
 
+#: The run-level folder holding every movie's tables stacked into one. Named
+#: here rather than imported from ``analysis.pool`` so that drawing a figure
+#: does not pull the measurement modules in behind it; ``test_figure_schema``
+#: checks the two spellings still agree.
+POOLED_FOLDER = "pooled"
+
+
 def tables_for(run: Path, stem: str | None = None) -> Path:
-    """The tables folder for a stem, or the only stem if there is just one."""
+    """The tables folder for a stem, or the only stem if there is just one.
+
+    A movie folder is one holding a ``tables`` folder, which is what separates
+    it from ``figures/`` without carrying a list of names to skip.
+
+    ``pooled/`` is the exception and has to be named, because it holds a
+    ``tables`` folder too. Left in the list, every figure on a pooled run of one
+    movie would refuse to draw until given a ``--stem`` it should not need, and
+    on a run of several ``--stem pooled`` would silently draw every movie at
+    once on a page whose words say one.
+    """
     if stem:
         return run / stem / "tables"
-    candidates = sorted(p for p in run.iterdir() if (p / "tables").is_dir())
+    candidates = sorted(p for p in run.iterdir()
+                        if p.name != POOLED_FOLDER and (p / "tables").is_dir())
     if len(candidates) != 1:
         names = ", ".join(p.name for p in candidates) or "none"
         raise SystemExit(f"pass a stem: this run holds {names}")
     return candidates[0] / "tables"
+
+
+def any_movie(run: Path) -> str | None:
+    """The first movie in a run, for a page that reads none of their tables.
+
+    A run-level figure - one drawing ``statistics.csv`` or a pooled table - has
+    no movie of its own, and every handle the context carries is built from a
+    stem: where the tables are, which acquisition facts to put in the units
+    line. Any movie answers those equally well for such a page, because the
+    tables it reads sit above all of them.
+
+    Returns ``None`` when the run holds no movie folder at all, which the
+    ordinary resolvers then report in their own words.
+    """
+    movies = [p.name for p in Path(run).iterdir()
+              if p.name != POOLED_FOLDER and (p / "tables").is_dir()]
+    return sorted(movies)[0] if movies else None
+
+
+def require_run_table(tables: Path, name: str, module: str) -> Path:
+    """A run-level table's path, or a message naming what would have written it.
+
+    Some tables belong to the run rather than to any one movie, because they
+    were made by comparing movies: ``statistics.csv`` at the run root, and
+    everything under ``pooled/``. A movie cannot own a file about all of them.
+
+    ``tables`` is still the movie's tables folder, because that is the handle
+    the context carries; the run is its grandparent. Taking the run from the
+    same handle rather than from a second argument is what leaves every caller
+    unchanged.
+
+    Deliberately a separate function rather than two more candidates inside
+    :func:`require_table`. Widening that search would make every movie-level
+    table findable at the run root, and a page claiming to draw one movie would
+    quietly draw the pooled stack of all of them.
+    """
+    run = Path(tables).parent.parent
+    for candidate in (run / name,                                 # written by pass three
+                      run / POOLED_FOLDER / "tables" / name,      # pooled, measured
+                      run / POOLED_FOLDER / "tracker" / name):    # pooled, copied
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        f"{name} is not in {run}: the {module!r} step wrote nothing for this run. "
+        f"A run-level table is written only when the configuration asks for one - "
+        f"statistics.csv needs a 'contrasts' block, and the pooled tables need a "
+        f"run that finished pooling. Add it and re-run."
+    )
 
 
 def require_table(tables: Path, name: str, module: str) -> Path:
@@ -430,11 +546,19 @@ def make_bundle(root: Path, sources: dict[str, Path]) -> pd.DataFrame:
     root = Path(root)
     if drafting():
         (root / "data" / "der").mkdir(parents=True, exist_ok=True)
-        return pd.DataFrame(columns=["short_name", "original_path", "sha256"])
+        return pd.DataFrame(columns=["short_name", "copied_path", "file_name",
+                                     "modification_time", "byte_size", "sha256"])
 
     for sub in ("data/src", "data/der", "fig", "code"):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
+    # Written out so an empty source list still produces a valid index. A page
+    # can legitimately read nothing - the contrast forest on a run whose
+    # configuration declared no comparisons is the case - and pandas gives a
+    # frame with no rows no columns either, which ReproFig rejects as a
+    # sources.csv missing every required field.
+    columns = ["short_name", "copied_path", "file_name",
+               "modification_time", "byte_size", "sha256"]
     rows = []
     for short_name, original in sources.items():
         original = Path(original)
@@ -444,7 +568,6 @@ def make_bundle(root: Path, sources: dict[str, Path]) -> pd.DataFrame:
         rows.append(
             {
                 "short_name": short_name,
-                "original_path": str(original),
                 "copied_path": copied.relative_to(root).as_posix(),
                 "file_name": original.name,
                 "modification_time": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
@@ -452,7 +575,7 @@ def make_bundle(root: Path, sources: dict[str, Path]) -> pd.DataFrame:
                 "sha256": sha256_of(original),
             }
         )
-    table = pd.DataFrame(rows)
+    table = pd.DataFrame(rows, columns=columns)
     table.to_csv(root / "data" / "sources.csv", index=False)
 
     lines = ["# Sources", ""]
@@ -460,7 +583,6 @@ def make_bundle(root: Path, sources: dict[str, Path]) -> pd.DataFrame:
         lines += [
             f"## {row['short_name']}",
             "",
-            f"- original: `{row['original_path']}`",
             f"- copied to: `{row['copied_path']}`",
             f"- modified (UTC): {row['modification_time']}",
             f"- bytes: {row['byte_size']:,}",
@@ -558,19 +680,38 @@ def save_reprofig_figure(
     scripts = Path.home() / ".claude" / "skills" / "plot-that" / "scripts"
     if str(scripts) not in sys.path:
         sys.path.insert(0, str(scripts))
-    from reprofig_bundle import save_matplotlib_svg
+    from reprofig_bundle import record_for_bundle, save_matplotlib_svg
 
     target = figure_path(run, bundle, name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    saved = save_matplotlib_svg(
-        figure,
+    statistics_path = Path(bundle) / "data" / "der" / "statistics.csv"
+    statistics_status = "not_applicable"
+    if statistics_path.exists():
+        try:
+            if not pd.read_csv(statistics_path).empty:
+                statistics_status = "complete"
+        except pd.errors.EmptyDataError:
+            pass
+    record = record_for_bundle(
         target,
         claim=claim or None,
         grammar=grammar,
         producer=producer,
-        statistics_status="not_applicable",
-        savefig_kwargs={"transparent": True, "bbox_inches": "tight"},
+        statistics_status=statistics_status,
     )
+    # Dropbox can grab ReproFig's hidden intermediate SVG between Matplotlib's
+    # write and the metadata replacement on Windows. Build and validate the
+    # complete carrier off the synced drive, then copy that finished file once.
+    with tempfile.TemporaryDirectory(prefix="motion-reprofig-") as scratch:
+        staged = Path(scratch) / target.name
+        save_matplotlib_svg(
+            figure,
+            staged,
+            record=record,
+            savefig_kwargs={"transparent": True, "bbox_inches": "tight"},
+        )
+        shutil.copy2(staged, target)
+    saved = target
     figure.savefig(
         target.parent / "preview.png", format="png", dpi=200, transparent=False,
         facecolor="white", bbox_inches="tight",

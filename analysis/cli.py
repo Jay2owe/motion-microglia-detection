@@ -9,6 +9,7 @@
     python -m analysis window     <run> --config <file>   before and after, separately
     python -m analysis pool       <run>               every movie's tables in one
     python -m analysis contrasts  <run> --config <file>   which groups differ, and by how much
+    python -m analysis plots      <run>               draw the figures the run's plan asks for
 """
 
 from __future__ import annotations
@@ -65,6 +66,111 @@ def _columns_of(module) -> None:
         print(f"  {'':<18} {column.name:<32} {column.label}{unit}")
 
 
+#: The windowing step writes three tables of its own. It is not a module and
+#: cannot be switched off, so it is named rather than looked up.
+WINDOW_STEP = "window"
+
+#: The run writes three tables nobody declares: the join of every module's
+#: per-cell-frame output, and the two roll-ups over it. Named for the same
+#: reason the windowing step is - they always exist, so anything checking
+#: whether a table will be there has to know that rather than report the three
+#: most-read tables in the package as missing.
+JOIN_STEP = "run"
+JOINED: tuple[str, ...] = ("cell_frame", "cell_summary", "frame_summary")
+
+#: ``statistics.csv`` comes from ``python -m analysis contrasts``, which is its
+#: own step and is switched on by declaring contrasts rather than by
+#: ``enabled_modules``.
+CONTRAST_STEP = "contrasts"
+
+
+def table_writers() -> dict[str, str]:
+    """Which step writes each table: a module, the windowing step, or the run."""
+    from analysis.contrasts import STATISTICS_FILE
+    from analysis.windows import WINDOWED
+
+    writers = {output.name: module.name
+               for module in (*list_modules(), *list_derived())
+               for output in module.writes}
+    writers.update({output.name: WINDOW_STEP for output in WINDOWED})
+    writers.update({name: JOIN_STEP for name in JOINED})
+    writers[STATISTICS_FILE.removesuffix(".csv")] = CONTRAST_STEP
+    return writers
+
+
+def table_state(config: AnalysisConfig, table: str,
+                writers: dict[str, str]) -> tuple[str, str | None]:
+    """Whether one table will exist by the time something reads it.
+
+    The failure this catches costs an hour, and it arrives by two routes: a
+    contrast against a table nothing writes, and a queued figure that draws
+    from one. Either way the traceback names a missing file rather than the
+    one-line omission in ``enabled_modules`` that actually caused it.
+    """
+    writer = writers.get(table)
+    if writer is None:
+        return "NO SUCH TABLE", None
+    # The three steps that are not modules. Windowing and the join always run;
+    # the contrasts step runs when contrasts are declared, so a figure drawing
+    # `statistics.csv` from a configuration that declares none is a real fault
+    # and says so.
+    switched_on = (set(config.enabled_modules
+                       or [name for name in writers.values()
+                           if name != CONTRAST_STEP])
+                   | {WINDOW_STEP, JOIN_STEP}
+                   | ({CONTRAST_STEP} if config.contrasts else set()))
+    if writer not in switched_on:
+        return "MODULE IS OFF", writer
+    return "", writer
+
+
+def contrast_table_state(config: AnalysisConfig, contrast,
+                         writers: dict[str, str]) -> tuple[str, str | None]:
+    """Whether the table a contrast names will exist by the time it is tested."""
+    return table_state(config, contrast.table, writers)
+
+
+def figure_table_state(config: AnalysisConfig, spec,
+                       writers: dict[str, str]) -> list[tuple[str, str, str | None]]:
+    """Every table a queued figure reads that will not exist, and why.
+
+    The same check ``contrast_table_state`` makes, arriving by the other route.
+    A figure whose module is switched off draws nothing an hour into a run,
+    which is exactly the forty minutes run ``g01`` lost.
+
+    Three things it deliberately skips. A ``Stack`` or an ``Input`` is not a
+    module's table - its "module" is prose such as "the movie" - so looking one
+    up would report every image-drawing page as broken. An ``optional`` table
+    missing is a panel left out with a note, which is working as designed. And
+    ``Table.name`` carries a ``.csv`` that the writer index does not.
+    """
+    schema = _figure_schema()
+    faults = []
+    for source in spec.reads:
+        if not isinstance(source, schema.Table) or source.optional:
+            continue
+        state, writer = table_state(
+            config, source.name.removesuffix(".csv"), writers)
+        if state:
+            faults.append((source.name, state, writer))
+    return faults
+
+
+def _figure_schema():
+    """The figure schema module, with the figures directory on the path.
+
+    In one place because it is the only import in this file that pulls in
+    matplotlib, and every command that never draws anything must keep not
+    paying for it.
+    """
+    figures_dir = Path(__file__).resolve().parent / "figures"
+    if str(figures_dir) not in sys.path:
+        sys.path.insert(0, str(figures_dir))
+    import _schema  # noqa: E402  - needs the path above
+
+    return _schema
+
+
 def _cmd_modules(_: argparse.Namespace) -> int:
     print("measurement modules (pixels -> tables)")
     for module in list_modules():
@@ -105,21 +211,27 @@ def _cmd_figures(args: argparse.Namespace) -> int:
             return 1
         return 0
 
-    print("figures (tables -> one audited bundle each)")
-    for number, path, spec in rows:
-        if spec is None:
-            # The filename, not a slug guessed from it: a builder off the
-            # schema has not said what its slug is, and the two are allowed to
-            # differ.
-            print(f"  {number:>2}  {path.name:<32} not on the schema yet")
+    for purpose, heading in (("result", "result figures"),
+                             ("review", "audit/review figures")):
+        selected = [(number, path, spec) for number, path, spec in rows
+                    if spec is not None and spec.purpose == purpose]
+        if not selected:
             continue
-        print(f"  {number:>2}  {spec.slug:<32} {spec.summary}")
-        print(f"      {'':<32} panels: "
-              f"{', '.join(p.key for p in spec.panels) or 'one'}")
-        print(f"      {'':<32} options: "
-              f"{' '.join(o.flag for o in spec.options) or 'none'}")
+        print(f"{heading} (tables -> one audited bundle each)")
+        for number, path, spec in selected:
+            print(f"  {number:>2}  {spec.slug:<32} {spec.summary}")
+            print(f"      {'':<32} panels: "
+                  f"{', '.join(p.key for p in spec.panels) or 'one'}")
+            print(f"      {'':<32} options: "
+                  f"{' '.join(o.flag for o in spec.options) or 'none'}")
+        print()
+    unconverted = [(number, path) for number, path, spec in rows if spec is None]
+    if unconverted:
+        print("builders not on the schema")
+        for number, path in unconverted:
+            print(f"  {number:>2}  {path.name:<32} not on the schema yet")
+        print()
     declared = sum(1 for _, _, spec in rows if spec is not None)
-    print()
     print(f"{declared} of {len(rows)} declared; "
           f"python -m analysis figures --slug <slug> for one figure's options")
     return 0
@@ -372,6 +484,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         assignments = {movie.stem: config.assignment(movie).condition
                        for movie in config.movies}
         subjects = {movie.stem: (movie.subject or movie.stem) for movie in config.movies}
+        writer_of = table_writers()
+
         for contrast in config.contrasts:
             units_per_group: dict[str, int] = {}
             for group in contrast.groups:
@@ -390,20 +504,30 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
                 f"{group}={'?' if count < 0 else count}"
                 for group, count in units_per_group.items())
             known = [count for count in units_per_group.values() if count >= 0]
-            state = "ok"
-            if known and min(known) < 3:
+            state, writer = contrast_table_state(config, contrast, writer_of)
+            if state:
+                problems += 1
+            elif known and min(known) < 3:
                 state = "TOO FEW UNITS"
                 problems += 1
             elif any(count == 0 for count in units_per_group.values()):
                 state = "GROUP IS EMPTY"
                 problems += 1
-            print(f"  contrast   {state}  {contrast.name:<26} "
+            print(f"  contrast   {state or 'ok'}  {contrast.name:<26} "
                   f"{len(contrast.metrics)} metric(s)  by {contrast.group_by}  "
                   f"[{sizes}] {contrast.unit}(s)  {contrast.test}  "
                   f"family {contrast.family!r}")
+            if state == "NO SUCH TABLE":
+                print(f"  {'':<13} {contrast.table}.csv is not written by any "
+                      f"module; the tables are "
+                      f"{', '.join(sorted(writer_of))}")
+            elif state == "MODULE IS OFF":
+                print(f"  {'':<13} {contrast.table}.csv is written by "
+                      f"{writer!r}, which is not in enabled_modules, so the "
+                      f"table will not exist to test")
 
     # The figures block, checked before anything is measured rather than by the
-    # thirty-sixth build an hour later. A misspelled option is the failure that
+    # fortieth build an hour later. A misspelled option is the failure that
     # looks like success: the figure draws, with the defaults.
     figure_notes = config.figure_problems()
     if figure_notes:
@@ -411,6 +535,55 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         for note in figure_notes:
             print(f"  figures    {note}")
         problems += len(figure_notes)
+
+    # Named column sets, printed resolved. A group is written once and used in
+    # twenty-seven figures and every contrast, so seeing what it came out as is
+    # the difference between "the circadian measurements" meaning what its
+    # author thought and meaning six columns nobody checked.
+    if config.metric_groups:
+        print()
+        for name, group in config.metric_groups.items():
+            print(f"  group      {name:<20} {len(group.columns):>3} column(s)  "
+                  f"{', '.join(group.columns[:6])}"
+                  + (" ..." if len(group.columns) > 6 else ""))
+    group_notes = config.metric_group_problems()
+    for note in group_notes:
+        print(f"  group      {note}")
+    problems += len(group_notes)
+
+    # The plan, checked before anything is measured. A queued figure whose
+    # module is switched off is the failure that costs forty minutes: it draws
+    # nothing an hour into a run, and the traceback names a missing file rather
+    # than the omission in `enabled_modules` that caused it.
+    if config.plots:
+        print()
+        plan_notes = config.plot_problems()
+        for note in plan_notes:
+            print(f"  plots      {note}")
+        problems += len(plan_notes)
+        if not plan_notes:
+            items = config.plot_items()
+            # Computed here rather than borrowed from the contrast section: a
+            # configuration may declare a plan and no contrasts at all.
+            writers = table_writers()
+            print(f"  plots      {len(config.plots)} request(s) -> "
+                  f"{len(items)} item(s)")
+            specs = {spec.slug: spec
+                     for _, _, spec in _figure_schema().catalogue()
+                     if spec is not None}
+            for item in items:
+                faults = figure_table_state(config, specs[item.figure], writers)
+                state = faults[0][1] if faults else "ok"
+                print(f"  {'':<13}{item.name:<48} {item.figure:<24} {state}")
+                for table, fault, writer in faults:
+                    problems += 1
+                    if fault == "NO SUCH TABLE":
+                        print(f"  {'':<15} {table} is not written by any module; "
+                              f"the tables are {', '.join(sorted(writers))}")
+                    else:
+                        print(f"  {'':<15} {table} is written by {writer!r}, which "
+                              "is not in enabled_modules, so the table will not "
+                              "exist to draw")
 
     print(f"\n{problems} problem(s)")
     return 1 if problems else 0
@@ -564,6 +737,182 @@ def _cmd_pool(args: argparse.Namespace) -> int:
     return 0
 
 
+#: What the plan manifest records, one row per item. Long format on purpose -
+#: one row per item, never one column per item - so it can be filtered and
+#: joined like any other table this package writes.
+PLAN_COLUMNS = ("name", "figure", "varied", "status", "seconds", "bundle", "error")
+
+
+def _varied(entry: dict) -> str:
+    """The settings that make one item different from its siblings, on one line.
+
+    Slugified rather than repr'd: `metrics=area-px` is what the folder is
+    called, and a manifest that spelled it `metrics=['area_px']` would be a
+    second name for one thing.
+    """
+    from analysis.plots import slugify
+
+    return ";".join(f"{key}={slugify(value)}"
+                    for key, value in (entry.get("varied") or {}).items())
+
+
+def _plan_from_file(path: Path) -> list:
+    """A standalone plan file, expanded here with the same checks and expander.
+
+    Either a whole analysis configuration or a file holding just ``plots`` and
+    ``metric_groups``; both are read the same way. It must not be silently
+    different from the plan a run records, so it goes through the same two
+    functions and nothing else.
+    """
+    from analysis.metric_groups import build as build_groups
+    from analysis.plots import expand, parse
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    groups = build_groups(data.get("metric_groups"))
+    schema = _figure_schema()
+    rows = schema.catalogue()
+    specs = {spec.slug: spec for _, _, spec in rows if spec is not None}
+    unconverted = {source.name for _, source, spec in rows if spec is None}
+    return expand(parse(data.get("plots"), groups), specs, unconverted=unconverted)
+
+
+def _cmd_plots(args: argparse.Namespace) -> int:
+    """Draw every figure the run's plan asks for, one at a time.
+
+    Settings travel in the run's ``figures.json``, not on the command line, so
+    this needs none of ``build_all.py``'s machinery for deciding which flag
+    belongs to which figure: an item names its own figure and carries its own
+    settings, and the only thing passed through is which item to draw.
+
+    Serial, on purpose. Running items across worker processes is a separate
+    piece of work; what this does instead is write the manifest as it goes, so a
+    queue that dies half way through leaves a record of what got drawn.
+    """
+    import csv
+    import subprocess
+    import time
+
+    run = Path(args.run).resolve()
+    if not run.is_dir():
+        raise SystemExit(f"not a run folder: {run}")
+
+    schema = _figure_schema()
+    specs = {spec.slug: spec for _, _, spec in schema.catalogue() if spec is not None}
+
+    if args.plan:
+        items = [item.as_dict() for item in _plan_from_file(Path(args.plan))]
+        if not args.dry_run:
+            # Written beside the bundles it is about to produce, and only when
+            # there are going to be some. Otherwise the run folder ends up
+            # holding figures its own configuration never mentions, which is a
+            # bundle whose provenance is missing.
+            (run / "figures").mkdir(parents=True, exist_ok=True)
+            (run / "figures" / "plan.json").write_text(
+                json.dumps({"plots": items,
+                            "source": str(Path(args.plan).resolve())},
+                           indent=2), encoding="utf-8")
+    else:
+        from _text import plan_items
+
+        items = plan_items(run)
+
+    if not items:
+        raise SystemExit(
+            f"{run} has no plot plan. Add a `plots` block to the analysis "
+            "configuration and measure again, or pass --plan <file> to draw one "
+            "against this run without re-measuring.")
+
+    if args.only:
+        names = {entry["name"] for entry in items}
+        slugs = {entry["figure"] for entry in items}
+        unknown = [want for want in args.only if want not in names | slugs]
+        if unknown:
+            raise SystemExit(
+                f"--only {unknown[0]!r} is neither an item of this plan nor a "
+                f"figure in it.\nItems:\n  " + "\n  ".join(sorted(names))
+                + "\nFigures:\n  " + "\n  ".join(sorted(slugs)))
+        wanted = set(args.only)
+        items = [entry for entry in items
+                 if entry["name"] in wanted or entry["figure"] in wanted]
+
+    width = max(len(entry["name"]) for entry in items)
+    if args.dry_run:
+        for entry in items:
+            print(f"  {entry['name']:<{width}}  {entry['figure']:<24} "
+                  f"{_varied(entry)}")
+        print()
+        print(f"{len(items)} item(s) would be drawn into {run / 'figures'}")
+        return 0
+
+    switches = ["--draft"] if args.draft else []
+    where = run.parent / "figures" if args.draft else run / "figures"
+    manifest = (run / "figures" / "plan.csv")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    # A `--only` pass keeps the rows it is not about. Re-drawing one item after
+    # a file lock must not erase the record that the other thirty-nine were
+    # drawn - that record is the whole reason the manifest exists.
+    drawing = {entry["name"] for entry in items}
+    kept = []
+    if manifest.exists():
+        with manifest.open(newline="", encoding="utf-8") as handle:
+            kept = [row for row in csv.reader(handle)
+                    if row and row[0] not in drawing and row[0] != PLAN_COLUMNS[0]]
+    failures = []
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(PLAN_COLUMNS)
+        writer.writerows(kept)
+        handle.flush()
+        for entry in items:
+            name, slug = entry["name"], entry["figure"]
+            print(f"--- {name}")
+            spec = specs.get(slug)
+            if spec is None or spec.source is None:
+                failures.append(name)
+                writer.writerow([name, slug, "", "skipped", "", "",
+                                 f"no builder declares {slug!r}"])
+                handle.flush()
+                print(f"    no builder declares {slug!r}")
+                continue
+            clock = time.perf_counter()
+            # Captured and echoed rather than left to stream, because the
+            # manifest has to be able to say *why* an item failed. The cost is
+            # that a long builder's output arrives when it finishes.
+            done = subprocess.run(
+                [sys.executable, str(spec.source), str(run), "--item", name,
+                 *switches],
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            seconds = round(time.perf_counter() - clock, 1)
+            for stream in (done.stdout, done.stderr):
+                if stream:
+                    print(stream.rstrip())
+            failed = done.returncode != 0
+            if failed:
+                failures.append(name)
+            tail = [line for line in
+                    ((done.stderr or done.stdout or "").splitlines()) if line.strip()]
+            # Where the figure landed, relative to whatever holds it: a bundle
+            # is a folder inside the run, a draft is one flat file beside it.
+            bundle = ("" if failed else str(
+                Path("figures") / (f"{name.replace('/', '_')}.svg" if args.draft
+                                   else name)))
+            writer.writerow([
+                name, slug, _varied(entry), "failed" if failed else "drawn",
+                seconds, bundle, tail[-1] if failed and tail else "",
+            ])
+            handle.flush()
+
+    print()
+    if failures:
+        print(f"{len(failures)} item(s) failed: {', '.join(failures)}")
+        print(f"the manifest says which and why: {manifest}")
+        return 1
+    kind = "draft figure(s)" if args.draft else "bundle(s)"
+    print(f"{len(items)} {kind} written to {where}")
+    print(f"manifest: {manifest}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="analysis", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -625,6 +974,18 @@ def build_parser() -> argparse.ArgumentParser:
     tester.add_argument("--config", required=True,
                         help="the configuration holding the `contrasts` block")
     tester.set_defaults(handler=_cmd_contrasts)
+
+    plots = sub.add_parser(
+        "plots", help="draw the figures the run's plot plan declares")
+    plots.add_argument("run", help="the analysis run folder")
+    plots.add_argument("--plan", help="a plan file to draw instead of the run's")
+    plots.add_argument("--only", action="append", default=[], metavar="NAME",
+                       help="an item name or a figure slug; repeatable")
+    plots.add_argument("--dry-run", action="store_true",
+                       help="print what would be drawn, and how many, then stop")
+    plots.add_argument("--draft", action="store_true",
+                       help="write only the figures, flat, with no audit bundle")
+    plots.set_defaults(handler=_cmd_plots)
     return parser
 
 

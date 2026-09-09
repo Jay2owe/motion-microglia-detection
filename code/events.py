@@ -354,4 +354,7 @@ def resolve_events(labels: np.ndarray, raw: np.ndarray, params: dict
             "evidence_margin": None,
             "reason": "appearance or disappearance not proven to be birth, death, entry, exit, split, merge, or miss",
         })
-    return fixed, pd.DataFrame(rows), inferred, unresolved
+    events = pd.DataFrame(rows)
+    if events.empty:
+        events = pd.DataFrame(columns=["status"])
+    return fixed, events, inferred, unresolved

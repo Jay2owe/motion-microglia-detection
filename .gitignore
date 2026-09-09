@@ -7,6 +7,11 @@
 !/requirements.txt
 !/run_pipeline.ps1
 !/config.example.json
+!/docs/
+/docs/*
+!/docs/ui/
+/docs/ui/*
+!/docs/ui/Motion-UI-*.png
 !/code/
 /code/*
 !/code/*.py
@@ -18,6 +23,9 @@
 !/analysis/
 /analysis/*
 !/analysis/*.py
+!/analysis/pipelines/
+/analysis/pipelines/*
+!/analysis/pipelines/*.py
 !/analysis/README.md
 !/analysis/modules/
 /analysis/modules/*
@@ -25,6 +33,11 @@
 !/analysis/figures/
 /analysis/figures/*
 !/analysis/figures/*.py
+!/analysis/figures/SPATIAL_PLOTS.md
+# Quality-control builders are kept apart from result figures.
+!/analysis/figures/review/
+/analysis/figures/review/*
+!/analysis/figures/review/*.py
 # The shared panel drawers every numbered figure imports. Without these the
 # package clones but does not run.
 !/analysis/figures/panels/

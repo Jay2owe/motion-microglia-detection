@@ -11,25 +11,31 @@ from . import common
 from ._contract import PanelResult
 
 
-REGIME_ROLES: dict[int, str] = {
-    0: "morphology",
-    1: "reporter",
-    2: "surveillance",
-    3: "motility",
-    4: "evidence",
-    5: "highlight",
-    6: "rhythmic",
-    7: "stable",
+REGIME_COLOURS: dict[int, str] = {
+    # Three visibly related rows for the crossed classifier: cool hues for low
+    # size, warm hues for medium size, and purple/dark hues for high size.
+    # Every entry is a named theme colour, so users can replace the palette
+    # without editing a plotting function.
+    0: "okabe_sky_blue",
+    1: "okabe_blue",
+    2: "okabe_bluish_green",
+    3: "okabe_yellow",
+    4: "okabe_orange",
+    5: "okabe_vermilion",
+    6: "okabe_reddish_purple",
+    7: "violet",
+    8: "dark",
 }
 
 __all__ = [
-    "REGIME_ROLES", "regime_ribbon", "regime_transitions", "dwell_times",
+    "REGIME_COLOURS", "regime_colour", "regime_ribbon", "regime_transitions", "dwell_times",
     "occupancy_area", "sholl_kymograph", "sholl_profile",
 ]
 
 
-def _role(regime: int) -> str:
-    return REGIME_ROLES[int(regime) % len(REGIME_ROLES)]
+def regime_colour(regime: int, theme: Any) -> str:
+    """Shared, user-configurable colour for one size-and-movement state."""
+    return theme.colour(REGIME_COLOURS[int(regime) % len(REGIME_COLOURS)])
 
 
 def regime_ribbon(
@@ -58,7 +64,7 @@ def regime_ribbon(
     confidence = np.ones_like(values) if margins is None else np.clip(np.asarray(margins, dtype=float), 0, 1)
     rgba = np.zeros((*values.shape, 4), dtype=float)
     for regime in sorted(int(value) for value in np.unique(values[np.isfinite(values)])):
-        colour = np.asarray(to_rgba(theme.colour(_role(regime))))
+        colour = np.asarray(to_rgba(regime_colour(regime, theme)))
         selected = values == regime
         rgba[selected, :3] = colour[:3]
         rgba[selected, 3] = 0.18 + 0.82 * confidence[selected]
@@ -75,7 +81,7 @@ def regime_ribbon(
     if legend:
         regimes = sorted(int(value) for value in np.unique(values[np.isfinite(values)]))
         names = regime_labels or {}
-        ax.legend(handles=[Patch(color=theme.colour(_role(regime)),
+        ax.legend(handles=[Patch(color=regime_colour(regime, theme),
                                  label=names.get(regime, f"State {regime}"))
                            for regime in regimes], frameon=False, ncol=max(1, len(regimes)))
     rows, columns = np.indices(values.shape)
@@ -178,7 +184,7 @@ def dwell_times(
         counts, used = np.histogram(selected[np.isfinite(selected)], bins=edges)
         centres = (used[:-1] + used[1:]) / 2
         names = regime_labels or {}
-        ax.step(centres, counts, where="mid", color=theme.colour(_role(int(regime))),
+        ax.step(centres, counts, where="mid", color=regime_colour(int(regime), theme),
                 linewidth=theme.stroke("emphasis"),
                 label=names.get(int(regime), f"State {int(regime)}"))
         rows.extend({"regime": int(regime), "bin_left_frames": left,
@@ -209,7 +215,7 @@ def occupancy_area(
     """Population regime composition over time as a normalised stack."""
     data = np.asarray(fractions, dtype=float)
     frame = {f"regime_{regime}": data[:, index] for index, regime in enumerate(regime_ids)}
-    looks = {f"regime_{regime}": common.Look(colour=theme.colour(_role(int(regime))))
+    looks = {f"regime_{regime}": common.Look(colour=regime_colour(int(regime), theme))
              for regime in regime_ids}
     names = regime_labels or {}
     drawn = common.stacked_area(
@@ -237,7 +243,7 @@ def sholl_kymograph(
     vmin: float | None = None,
     vmax: float | None = None,
 ) -> PanelResult:
-    """Radial occupancy surface with the 95th-percentile reach overlaid."""
+    """Any time-by-radius surface, optionally with a reach boundary overlaid."""
     drawn = common.surface(
         ax, occupancy, theme, x=hours, y=radii, cmap=cmap,
         contour_at=contour_at, x_label="Hours from start of recording", y_label=y_label,

@@ -9,11 +9,11 @@ from analysis.modules import (channels, contacts, coupling, history,  # noqa: F4
                              object_geometry, objects, presence, provenance,
                              recurrence, regimes, rhythms, sequence_distance,
                              sholl, surveillance, territory, territory_shape,
-                             walk)
+                             trend, walk)
 
 __all__ = [
     "morphology", "intensity", "channels", "motility", "surveillance", "presence",
     "rhythms", "regimes", "territory", "territory_shape", "sholl", "coupling",
     "contacts", "neighbours", "objects", "object_geometry", "walk", "provenance",
-    "history", "recurrence", "sequence_distance",
+    "history", "recurrence", "sequence_distance", "trend",
 ]

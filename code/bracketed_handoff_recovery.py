@@ -28,6 +28,13 @@ FORBIDDEN_TARGET_TOKENS = (
     "target_frame", "target_event", "forced_identity", "forced_interval",
     "review_region",
 )
+PROPOSAL_COLUMNS = [
+    "proposal_id", "successor_track", "predecessor_track", "donor_track",
+    "target_owner", "foreign_owner", "first_frame", "last_frame",
+    "foreign_frames", "predecessor_target_frames", "successor_target_frames",
+    "handoff_step_sum_radii", "donor_owned_middle_frames",
+    "discovery_status", "discovery_reason",
+]
 
 
 def assert_target_free(params: dict) -> None:
@@ -82,6 +89,8 @@ def _component_near(frame: np.ndarray, owner: int, row) -> np.ndarray | None:
 
 def discover(scored: pd.DataFrame, labels: np.ndarray,
              params: dict) -> pd.DataFrame:
+    if scored.empty:
+        return pd.DataFrame(columns=PROPOSAL_COLUMNS)
     visible = scored[scored.physically_visible.astype(bool)].copy()
     groups = {int(track): group.sort_values("frame")
               for track, group in visible.groupby("track_id")}
@@ -204,7 +213,7 @@ def discover(scored: pd.DataFrame, labels: np.ndarray,
             "discovery_status": "eligible" if not reasons else "rejected",
             "discovery_reason": "eligible" if not reasons else "|".join(reasons),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=PROPOSAL_COLUMNS)
 
 
 def apply_proposal(labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,

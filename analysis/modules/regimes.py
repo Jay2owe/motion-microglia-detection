@@ -1,8 +1,10 @@
-"""Behavioural regimes from the joined per-cell, per-frame measurements.
+"""Nine size-and-movement subgroups for each classified cell-frame.
 
-This is a derived measurement: it combines shape, turnover, movement and
-reporter texture rather than reading another image stack.  Cluster numbers are
-made stable by sorting the fitted centroids by area after fitting.
+Size is read from the current frame. Movement is the centroid displacement
+from the immediately preceding frame into the current one, so a first frame or
+a frame after a gap has no movement and is not classified. Each measurement is
+ranked across the eligible cell-frames and split into low, medium and high; the
+two three-level axes cross to make nine explicit, ordered subgroups.
 """
 
 from __future__ import annotations
@@ -14,54 +16,36 @@ from analysis.registry import Column, MeasurementContext, Output, register_deriv
 
 
 DEFAULTS = {
-    "feature_columns": [
-        "area_px", "circularity", "solidity", "ramification_index",
-        "aspect_ratio", "skeleton_branches", "turnover_index",
-        "step_px_gapless", "punctateness",
-    ],
-    "n_regimes": 4,
-    "standardise": True,
-    "random_state": 20260825,
+    "size_column": "area_px",
+    "movement_column": "step_px_gapless",
+    "category_quantiles": [1 / 3, 2 / 3],
     "min_frames_per_cell": 12,
 }
 
 
-def _kmeans(values: np.ndarray, k: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    """Small deterministic k-means with k-means++ initialisation."""
-    values = np.asarray(values, dtype=float)
-    if len(values) < k:
-        raise ValueError(f"n_regimes={k} needs at least {k} complete cell-frames")
-    rng = np.random.default_rng(seed)
-    centres = [values[int(rng.integers(len(values)))]]
-    for _ in range(1, k):
-        distance2 = np.min(
-            np.stack([np.sum((values - centre) ** 2, axis=1) for centre in centres]),
-            axis=0,
-        )
-        total = float(distance2.sum())
-        pick = int(rng.choice(len(values), p=distance2 / total)) if total else len(centres)
-        centres.append(values[pick].copy())
-    centres_array = np.asarray(centres, dtype=float)
+LEVELS = ("low", "medium", "high")
 
-    labels = np.zeros(len(values), dtype=int)
-    for _ in range(200):
-        distances = np.linalg.norm(values[:, None, :] - centres_array[None, :, :], axis=2)
-        updated_labels = np.argmin(distances, axis=1)
-        updated = centres_array.copy()
-        for cluster in range(k):
-            members = values[updated_labels == cluster]
-            if len(members):
-                updated[cluster] = members.mean(axis=0)
-            else:
-                # Re-seed an empty cluster with the least well represented row.
-                farthest = int(np.argmax(np.min(distances, axis=1)))
-                updated[cluster] = values[farthest]
-                updated_labels[farthest] = cluster
-        if np.array_equal(labels, updated_labels) and np.allclose(centres_array, updated):
-            labels, centres_array = updated_labels, updated
-            break
-        labels, centres_array = updated_labels, updated
-    return labels, centres_array
+
+def _percentile_positions(values: np.ndarray) -> np.ndarray:
+    """Empirical positions from zero to one, with tied values kept together."""
+    values = np.asarray(values, dtype=float)
+    if len(values) <= 1:
+        return np.full(len(values), 0.5, dtype=float)
+    ranks = pd.Series(values).rank(method="average").to_numpy(float) - 1.0
+    return ranks / float(len(values) - 1)
+
+
+def _quantile_boundaries(value: object) -> tuple[float, float]:
+    """Validate the two cuts that define low, medium and high."""
+    try:
+        boundaries = tuple(float(item) for item in value)
+    except (TypeError, ValueError):
+        raise ValueError("regimes.category_quantiles must contain two numbers") from None
+    if len(boundaries) != 2 or not (0 < boundaries[0] < boundaries[1] < 1):
+        raise ValueError(
+            "regimes.category_quantiles must be two increasing fractions between 0 and 1"
+        )
+    return boundaries
 
 
 #: What this module adds. It cannot declare all of what it writes:
@@ -71,15 +55,20 @@ def _kmeans(values: np.ndarray, k: int, seed: int) -> tuple[np.ndarray, np.ndarr
 #: labelled by whoever measured them, which is why nothing is lost by leaving
 #: them out here.
 #:
-#: A regime number is a name, not a quantity: regime 3 is not more of anything
-#: than regime 1, and the ``reference`` role keeps it out of the sequential
-#: colour maps that would imply otherwise.
+#: A regime number encodes the crossed levels: ``size * 3 + movement``. It is a
+#: label rather than a continuous measurement, so the ``reference`` role keeps
+#: it out of sequential colour maps that would imply equal numeric distances.
 PRODUCES = (
     # regimes - one row per cell per frame
-    Column("regime", "Behavioural regime", "", "reference"),
-    Column("regime_distance", "Distance to its own regime centre", "s.d.", "reference"),
-    Column("regime_second", "Next closest regime", "", "reference"),
-    Column("regime_margin", "How much closer than the next regime", "fraction", "reference"),
+    Column("regime", "Size and movement subgroup", "", "reference"),
+    Column("regime_label", "Size and movement subgroup label", "", "reference"),
+    Column("regime_size_level", "Size category", "", "morphology"),
+    Column("regime_movement_level", "Movement category", "", "motility"),
+    Column("regime_size_percentile", "Size percentile", "fraction", "morphology"),
+    Column("regime_movement_percentile", "Movement percentile", "fraction", "motility"),
+    Column("regime_distance", "Distance to its subgroup centre", "quantile fraction", "reference"),
+    Column("regime_second", "Next closest subgroup", "", "reference"),
+    Column("regime_margin", "How much closer than the next subgroup", "fraction", "reference"),
     # regime_transitions - one row per pair of consecutive observed frames,
     # not one per change. The rows where the regime did not change are the
     # point: figure 24 normalises the transition matrix including its diagonal,
@@ -108,7 +97,7 @@ WRITES = (
 
 @register_derived(
     name="regimes",
-    description="Per-frame behavioural state from a standardised morphology and surveillance vector",
+    description="Nine per-frame subgroups from low, medium and high size crossed with movement",
     needs_columns=("identity", "frame_index", "hours"),
     defaults=DEFAULTS,
     produces=PRODUCES,
@@ -116,7 +105,19 @@ WRITES = (
 )
 def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, pd.DataFrame]:
     params = {**DEFAULTS, **context.module_params("regimes")}
-    requested = list(params["feature_columns"])
+    legacy = sorted(
+        {"feature_columns", "n_regimes", "standardise", "random_state"}
+        & set(context.module_params("regimes"))
+    )
+    if legacy:
+        raise ValueError(
+            "regimes no longer accepts " + ", ".join(legacy)
+            + "; use size_column, movement_column and category_quantiles"
+        )
+    requested = [str(params["size_column"]), str(params["movement_column"])]
+    if requested[0] == requested[1]:
+        raise ValueError("regimes size_column and movement_column must be different")
+    boundaries = _quantile_boundaries(params["category_quantiles"])
     missing = [column for column in requested if column not in cell_frame.columns]
     if missing:
         raise ValueError(
@@ -132,41 +133,58 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
     ][keys + ["identity", "frame_index", "hours", *requested]].dropna(subset=requested).copy()
     if working.empty:
         empty = pd.DataFrame(columns=keys + [
-            "identity", "frame_index", "hours", "regime", "regime_distance",
-            "regime_second", "regime_margin",
+            "identity", "frame_index", "hours", "regime", "regime_label",
+            "regime_size_level", "regime_movement_level",
+            "regime_size_percentile", "regime_movement_percentile",
+            "regime_distance", "regime_second", "regime_margin",
         ])
         return {
             "regimes": empty,
             "regime_transitions": pd.DataFrame(),
-            "regime_profiles": pd.DataFrame(columns=["regime", *requested]),
+            "regime_profiles": pd.DataFrame(columns=[
+                "regime", "regime_label", "regime_size_level",
+                "regime_movement_level", "regime_observations", *requested,
+            ]),
         }
 
     raw = working[requested].to_numpy(float)
-    means = np.nanmean(raw, axis=0)
-    scales = np.nanstd(raw, axis=0)
-    scales[~np.isfinite(scales) | (scales == 0)] = 1.0
-    fitted = (raw - means) / scales if bool(params["standardise"]) else raw.copy()
-    labels, centres = _kmeans(fitted, int(params["n_regimes"]), int(params["random_state"]))
+    percentiles = np.column_stack([
+        _percentile_positions(raw[:, index]) for index in range(raw.shape[1])
+    ])
+    level_codes = np.column_stack([
+        np.digitize(percentiles[:, index], boundaries).astype(int)
+        for index in range(percentiles.shape[1])
+    ])
+    labels = level_codes[:, 0] * 3 + level_codes[:, 1]
 
-    original_centres = centres * scales + means if bool(params["standardise"]) else centres.copy()
-    area_index = requested.index("area_px") if "area_px" in requested else 0
-    stable_order = np.argsort(original_centres[:, area_index], kind="stable")
-    remap = np.empty(len(stable_order), dtype=int)
-    remap[stable_order] = np.arange(len(stable_order))
-    labels = remap[labels]
-    original_centres = original_centres[stable_order]
-    centres = centres[stable_order]
-
-    distances = np.linalg.norm(fitted[:, None, :] - centres[None, :, :], axis=2)
+    category_centres = np.asarray([
+        boundaries[0] / 2,
+        (boundaries[0] + boundaries[1]) / 2,
+        (boundaries[1] + 1) / 2,
+    ])
+    centres = np.asarray([
+        (category_centres[size], category_centres[movement])
+        for size in range(3) for movement in range(3)
+    ])
+    distances = np.linalg.norm(percentiles[:, None, :] - centres[None, :, :], axis=2)
     ranked = np.argsort(distances, axis=1)
     own = distances[np.arange(len(distances)), labels]
-    second = ranked[:, 0].copy()
-    for index in range(len(second)):
-        second[index] = next(cluster for cluster in ranked[index] if cluster != labels[index])
+    second = np.asarray([
+        next(subgroup for subgroup in row if subgroup != labels[index])
+        for index, row in enumerate(ranked)
+    ], dtype=int)
     runner_up = distances[np.arange(len(distances)), second]
 
     regimes = working[keys + ["identity", "frame_index", "hours"]].copy()
     regimes["regime"] = labels.astype(int)
+    regimes["regime_size_level"] = [LEVELS[value] for value in level_codes[:, 0]]
+    regimes["regime_movement_level"] = [LEVELS[value] for value in level_codes[:, 1]]
+    regimes["regime_label"] = [
+        f"{LEVELS[size].title()} size, {LEVELS[movement]} movement"
+        for size, movement in level_codes
+    ]
+    regimes["regime_size_percentile"] = percentiles[:, 0]
+    regimes["regime_movement_percentile"] = percentiles[:, 1]
     regimes["regime_distance"] = own
     regimes["regime_second"] = second.astype(int)
     regimes["regime_margin"] = (runner_up - own) / np.maximum(runner_up, 1e-12)
@@ -201,8 +219,23 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                 row[column] = group.loc[index, column]
             transition_rows.append(row)
 
-    profiles = pd.DataFrame(original_centres, columns=requested)
-    profiles.insert(0, "regime", np.arange(len(profiles), dtype=int))
+    profile_rows = []
+    for size in range(3):
+        for movement in range(3):
+            regime = size * 3 + movement
+            members = raw[labels == regime]
+            profile_rows.append({
+                "regime": regime,
+                "regime_label": f"{LEVELS[size].title()} size, {LEVELS[movement]} movement",
+                "regime_size_level": LEVELS[size],
+                "regime_movement_level": LEVELS[movement],
+                "regime_observations": int(len(members)),
+                requested[0]: (float(np.median(members[:, 0])) if len(members)
+                               else float(np.quantile(raw[:, 0], category_centres[size]))),
+                requested[1]: (float(np.median(members[:, 1])) if len(members)
+                               else float(np.quantile(raw[:, 1], category_centres[movement]))),
+            })
+    profiles = pd.DataFrame(profile_rows)
     transitions = pd.DataFrame(transition_rows)
     return {
         "regimes": regimes,

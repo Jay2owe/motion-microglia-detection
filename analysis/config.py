@@ -676,7 +676,9 @@ class ContrastConfig:
     @classmethod
     def from_dict(cls, raw_dict: dict, tests: tuple[str, ...],
                   paired_tests: tuple[str, ...],
-                  corrections: tuple[str, ...]) -> "ContrastConfig":
+                  corrections: tuple[str, ...],
+                  single_group_tests: tuple[str, ...],
+                  metric_groups: dict) -> "ContrastConfig":
         name = str(raw_dict.get("name", "")).strip()
         if not _WINDOW_NAME.fullmatch(name):
             raise ValueError(
@@ -701,8 +703,31 @@ class ContrastConfig:
                 "correction across a thousand tests nobody meant to run "
                 "destroys the power to find the twenty that were the point."
             )
+        # A named set of columns is expanded here, before anything else looks at
+        # the list, so nothing downstream ever sees an unresolved "@". Imported
+        # here rather than at the top for the reason `figure_problems` gives:
+        # this file is deliberately importable on its own.
+        from analysis.metric_groups import resolve_metrics
+
+        metrics = list(resolve_metrics(
+            metrics, metric_groups, where=f"contrast {name!r} metrics"))
+        # Read ahead: how many groups are allowed depends on the test, and a
+        # one-group test named alongside two groups is a contradiction rather
+        # than a setting to be resolved in favour of one of them.
+        one_sample = str(raw_dict.get("test", "")).strip() in single_group_tests
         groups = required("groups")
-        if not isinstance(groups, (list, tuple)) or len(groups) < 2:
+        if not isinstance(groups, (list, tuple)) or not groups:
+            raise ValueError(
+                f"contrast {name!r}: groups must be a list of "
+                f"{raw_dict.get('group_by', 'the grouping column')} values"
+            )
+        if one_sample and len(groups) != 1:
+            raise ValueError(
+                f"contrast {name!r}: {raw_dict['test']} compares one group "
+                f"against zero, but {len(groups)} are named. Naming a second "
+                "would read as a comparison this test does not make."
+            )
+        if not one_sample and len(groups) < 2:
             raise ValueError(
                 f"contrast {name!r}: groups must be a list of at least two "
                 f"values of {raw_dict.get('group_by', 'the grouping column')} "
@@ -784,7 +809,74 @@ class ContrastConfig:
         )
 
 
-def _contrasts(entries: object) -> list[ContrastConfig]:
+def _metric_groups(block: object) -> dict:
+    """Parse the ``metric_groups`` block into resolved groups.
+
+    Imported inside the function rather than at the top of this file: resolving
+    a group means asking the registered modules what they write, and a caller
+    that only wanted to read a configuration should not pay for importing every
+    measurement module. A configuration with no ``metric_groups`` block never
+    reaches the import.
+    """
+    if not block:
+        return {}
+    from analysis.metric_groups import build
+
+    return build(block)
+
+
+def _resolve_figure_metrics(figures: dict, groups: dict) -> dict:
+    """The ``figures`` block with every ``"@group"`` reference expanded.
+
+    Only the settings that hold a *set* of columns are touched, and only when
+    one of them actually names a group - so a configuration that declares no
+    groups comes back byte-identical, and a plain ``"a,b"`` string is still the
+    option's own cast to split rather than this function's to interpret.
+    """
+    if not groups or not figures:
+        return figures
+    from analysis.metric_groups import COLUMN_SET_SETTINGS, resolve_setting
+
+    resolved = {}
+    for slug, block in figures.items():
+        if not isinstance(block, dict) or not isinstance(block.get("options"), dict):
+            resolved[slug] = block
+            continue
+        options = dict(block["options"])
+        for name in COLUMN_SET_SETTINGS:
+            if name in options:
+                options[name] = resolve_setting(
+                    options[name], groups,
+                    where=f"figures.{slug}.options.{name}")
+        resolved[slug] = {**block, "options": options}
+    return resolved
+
+
+def _plots(entries: object, groups: dict) -> list:
+    """Parse the ``plots`` block into requests, without touching a figure.
+
+    What a figure accepts is declared on the figure, and reaching that
+    declaration means importing matplotlib. So only what can be checked without
+    it is checked here; the rest waits for ``plot_items`` and is reported by
+    ``plot_problems``.
+    """
+    if not entries:
+        return []
+    from analysis.plots import parse
+
+    return parse(entries, groups)
+
+
+def _pipelines(entries: object, groups: dict) -> list:
+    """Optional dependent requests; no scientific engine or renderer is loaded."""
+    if entries is None:
+        return []
+    from analysis.pipelines import parse
+
+    return parse(entries, groups)
+
+
+def _contrasts(entries: object, groups: dict) -> list[ContrastConfig]:
     """Parse the ``contrasts`` block, refusing a repeat and a split family.
 
     A family is the set of results one correction is applied across, so two
@@ -801,10 +893,13 @@ def _contrasts(entries: object) -> list[ContrastConfig]:
         )
     # Imported here rather than at the top: `contrasts` imports scipy, and a
     # caller that only wanted to read a configuration should not pay for it.
-    from analysis.contrasts import CORRECTIONS, PAIRED_TESTS, TESTS
+    from analysis.contrasts import (CORRECTIONS, PAIRED_TESTS,
+                                    SINGLE_GROUP_TESTS, TESTS)
 
     parsed = [ContrastConfig.from_dict(entry, tuple(TESTS), tuple(PAIRED_TESTS),
-                                       tuple(CORRECTIONS)) for entry in entries]
+                                       tuple(CORRECTIONS),
+                                       tuple(SINGLE_GROUP_TESTS), groups)
+              for entry in entries]
     seen: set[str] = set()
     for contrast in parsed:
         if contrast.name in seen:
@@ -857,7 +952,18 @@ class AnalysisConfig:
     #: ``statistics.csv``; there is deliberately no "test everything" mode. See
     #: :class:`ContrastConfig`.
     contrasts: list[ContrastConfig] = field(default_factory=list)
+    #: Named sets of measured columns, keyed by name, referenced as ``"@name"``
+    #: wherever a list of columns is expected. Empty is the normal case. See
+    #: :mod:`analysis.metric_groups`.
+    metric_groups: dict = field(default_factory=dict)
+    #: What to draw, as a list of requests. Empty is the normal case and behaves
+    #: exactly as the package did before plans existed. See :mod:`analysis.plots`.
+    plots: list = field(default_factory=list)
     source_path: Path | None = None
+    #: Result-dependent requests, kept separate from the static plot list.
+    #: Actual table availability and scientific settings resolve when a saved
+    #: measurement run is supplied. See ``analysis.pipelines``.
+    pipelines: list = field(default_factory=list)
 
     @classmethod
     def load(cls, path: str | Path) -> "AnalysisConfig":
@@ -869,6 +975,10 @@ class AnalysisConfig:
             candidate = Path(value)
             return candidate if candidate.is_absolute() else (root / candidate)
 
+        # Parsed before `figures` and `contrasts` because both may reference a
+        # group by name, and a reference resolved against groups that have not
+        # been read yet fails with a message about a group nobody misspelled.
+        groups = _metric_groups(data.get("metric_groups"))
         return cls(
             dataset=data.get("dataset", "unnamed dataset"),
             frame_interval_min=float(data["frame_interval_min"]),
@@ -881,10 +991,13 @@ class AnalysisConfig:
             verify_hashes=bool(data.get("verify_hashes", True)),
             theme=dict(data.get("theme", {})),
             conditions=ConditionSet.from_config(data.get("conditions")),
-            figures=dict(data.get("figures", {})),
+            figures=_resolve_figure_metrics(dict(data.get("figures", {})), groups),
             windows=_windows(data.get("windows"), "windows"),
-            contrasts=_contrasts(data.get("contrasts")),
+            contrasts=_contrasts(data.get("contrasts"), groups),
+            metric_groups=groups,
+            plots=_plots(data.get("plots"), groups),
             source_path=path,
+            pipelines=_pipelines(data.get("pipelines"), groups),
         )
 
     # --------------------------------------------------------------- windows
@@ -924,7 +1037,7 @@ class AnalysisConfig:
         """Every reason a ``figures`` block is not what its author meant.
 
         Checked here rather than at build time because the build that would
-        catch it is the thirty-sixth one, run an hour later; and because a
+        catch it is the fortieth one, run an hour later; and because a
         figure whose options are misspelled draws successfully with the
         defaults, which is the failure that looks like success.
 
@@ -981,6 +1094,90 @@ class AnalysisConfig:
                     f"figures.{slug}.{OPTIONS_KEY}: {name!r} is not an option of this "
                     f"figure; it accepts {', '.join(sorted(accepted)) or 'none'}")
         return problems
+
+    # -------------------------------------------------------- metric groups
+
+    def metric_group_problems(self) -> list[str]:
+        """Every reason a ``metric_groups`` block is not what its author meant.
+
+        The block is resolved when the configuration loads, so a group naming a
+        column nothing writes has already stopped the load by the time anything
+        calls this. What it is for is the failure that is not about this block
+        at all: ``declared_columns`` refuses two modules that describe one
+        column differently, and a doctor that crashed on that would be
+        reporting a registry fault as though the user had mistyped something.
+
+        Reported as lines rather than raised, in the shape ``figure_problems``
+        uses, because the doctor prints every fault it can find in one pass and
+        the first one must not hide the rest.
+        """
+        if self.source_path is None:
+            return []
+        try:
+            raw = json.loads(Path(self.source_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            return [f"metric_groups: cannot re-read {self.source_path}: {error}"]
+        if not raw.get("metric_groups"):
+            return []
+        try:
+            _metric_groups(raw["metric_groups"])
+        except (TypeError, ValueError) as error:
+            return [f"metric_groups: {line}"
+                    for line in str(error).splitlines() if line.strip()]
+        return []
+
+    # ----------------------------------------------------------- the plot plan
+
+    def plot_items(self) -> list:
+        """The plan expanded into one entry per figure that will be drawn.
+
+        Imported here, not at the top, for the reason ``figure_problems`` gives:
+        the measurement half of the package has never imported the plotting
+        half, and a run that only measures must stay possible in an environment
+        with no matplotlib. A configuration with no ``plots`` block never
+        reaches the import.
+        """
+        if not self.plots:
+            return []
+        import sys
+
+        figures_dir = Path(__file__).resolve().parent / "figures"
+        if str(figures_dir) not in sys.path:
+            sys.path.insert(0, str(figures_dir))
+        from _schema import catalogue
+
+        from analysis.plots import expand
+
+        rows = catalogue()
+        specs = {spec.slug: spec for _, _, spec in rows if spec is not None}
+        unconverted = {path.name for _, path, spec in rows if spec is None}
+        return expand(self.plots, specs, unconverted=unconverted)
+
+    def plot_problems(self) -> list[str]:
+        """Every reason a plan is not what its author meant, one line each.
+
+        Safe to call on a plan that cannot be expanded at all: a fault is a line
+        here, never an exception, because the doctor prints every fault it can
+        find in one pass.
+        """
+        if not self.plots:
+            return []
+        import sys
+
+        figures_dir = Path(__file__).resolve().parent / "figures"
+        if str(figures_dir) not in sys.path:
+            sys.path.insert(0, str(figures_dir))
+        try:
+            from _schema import catalogue
+
+            from analysis.plots import problems
+
+            rows = catalogue()
+            specs = {spec.slug: spec for _, _, spec in rows if spec is not None}
+            unconverted = {path.name for _, path, spec in rows if spec is None}
+            return problems(self.plots, specs, unconverted=unconverted)
+        except Exception as error:            # noqa: BLE001 - reported, not raised
+            return [f"the plan could not be checked: {error}"]
 
     def movie(self, stem: str) -> MovieConfig:
         for entry in self.movies:

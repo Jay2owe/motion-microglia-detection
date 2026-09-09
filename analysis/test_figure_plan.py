@@ -20,6 +20,7 @@ from analysis.registry import MeasurementContext
 from analysis.theme import load_theme
 from analysis.units import Scale
 from panels import common
+from panels import coupling as coupling_panels
 
 
 def _context(labels: np.ndarray, **params) -> MeasurementContext:
@@ -39,11 +40,84 @@ def test_rose_counts_cover_exactly_one_period():
     plt.close(fig)
 
 
+def test_rose_labels_phase_in_cycle_time_instead_of_degrees():
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+    common.rose(
+        ax, [0, 6, 12, 18], load_theme(), period=24,
+        tick_step=6, phase_unit="h",
+    )
+    assert [label.get_text() for label in ax.get_xticklabels()] == [
+        "0 h", "6 h", "12 h", "18 h",
+    ]
+    plt.close(fig)
+
+
 def test_vectors_resultant_is_a_concentration():
     fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
     drawn = common.vectors(ax, [0, 6, 12, 18], [1, 1, 1, 1], load_theme())
     assert 0 <= drawn.extra["concentration"] <= 1
     assert len(drawn.data) == 4
+    plt.close(fig)
+
+
+def test_vectors_radial_scale_contains_the_longest_arrow():
+    """Annotation arrows need an explicit limit because they do not autoscale axes."""
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+    common.vectors(ax, [0, 6], [250, 4_000], load_theme())
+    assert ax.get_ylim()[1] >= 4_000
+    plt.close(fig)
+
+
+def test_contact_metric_shuffle_keeps_contact_edges_and_pair_values():
+    contacts = pd.DataFrame({
+        "identity_a": [1, 3, 5, 7],
+        "identity_b": [2, 4, 6, 8],
+        "hours_in_contact": [1.0, 2.0, 3.0, 4.0],
+    })
+    values = pd.Series(
+        [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0],
+        index=range(1, 9),
+    )
+    pairs, result = coupling.contact_metric_permutation_test(
+        contacts, values, shuffles=500, random_state=7,
+    )
+    assert list(zip(pairs["identity_a"], pairs["identity_b"])) == [
+        (7, 8), (5, 6), (3, 4), (1, 2)
+    ]
+    assert np.allclose(pairs["pair_difference"], 0.0)
+    assert result["difference_ratio"] == 0.0
+    assert result["pairs"] == 4
+
+
+def test_contact_metric_circular_difference_wraps_at_cycle_end():
+    contacts = pd.DataFrame({
+        "identity_a": [1, 3, 5],
+        "identity_b": [2, 4, 6],
+        "hours_in_contact": [3.0, 2.0, 1.0],
+    })
+    values = pd.Series([0.95, 0.05, 0.2, 0.4, 0.6, 0.9], index=range(1, 7))
+    pairs, _ = coupling.contact_metric_permutation_test(
+        contacts, values, circular_period=1.0, shuffles=200, random_state=11,
+    )
+    assert pairs.loc[pairs["identity_a"].eq(1), "pair_difference"].iloc[0] == \
+        pytest.approx(0.1)
+
+
+def test_pair_metric_ledger_maps_requested_pair_and_metric_order():
+    frame = pd.DataFrame({
+        "pair": ["1-2", "1-2", "3-4", "3-4"],
+        "metric": ["area", "speed", "area", "speed"],
+        "difference_ratio": [0.5, 1.5, 0.8, 1.2],
+        "hours_in_contact": [2.0, 2.0, 5.0, 5.0],
+    })
+    fig, ax = plt.subplots()
+    drawn = coupling_panels.pair_metric_ledger(
+        ax, frame, load_theme(), pair_order=["3-4", "1-2"],
+        metric_order=["speed", "area"],
+        metric_labels={"speed": "Speed", "area": "Area"},
+    )
+    assert drawn.extra["matrix"].tolist() == [[1.2, 0.8], [1.5, 0.5]]
+    assert drawn.data["display_row"].tolist() == [0, 0, 1, 1]
     plt.close(fig)
 
 
@@ -55,12 +129,28 @@ def test_matrix_annotations_match_cells():
     plt.close(fig)
 
 
-def test_ridgeline_returns_one_axes_per_group():
+def test_stacked_histogram_is_generic_and_returns_one_axes_per_group():
     fig = plt.figure()
-    drawn = common.ridgeline(fig, (0.1, 0.1, 0.8, 0.8), [[1, 2], [2, 3]],
-                             load_theme(), labels=["a", "b"])
+    drawn = common.stacked_histogram(
+        fig, (0.1, 0.1, 0.8, 0.8), [[1, 2], [2, 3]], load_theme(),
+        labels=["arbitrary group a", "arbitrary group b"], bins=4,
+        limits=(0, 4), overlap=0.2, labels_outside=True,
+        x_label="Any numeric measurement",
+    )
     assert len(drawn.axes) == 2
-    assert set(drawn.data["group"]) == {"a", "b"}
+    assert set(drawn.data["group"]) == {"arbitrary group a", "arbitrary group b"}
+    assert len(drawn.data) == 8
+    assert drawn.axes[-1].get_xlabel() == "Any numeric measurement"
+    plt.close(fig)
+
+
+def test_ridgeline_remains_a_compatibility_name_for_stacked_histogram():
+    fig = plt.figure()
+    drawn = common.ridgeline(
+        fig, (0.1, 0.1, 0.8, 0.8), [[1, 2]], load_theme(), labels=["a"],
+    )
+    assert len(drawn.axes) == 1
+    assert set(drawn.data["group"]) == {"a"}
     plt.close(fig)
 
 
@@ -95,6 +185,7 @@ def test_event_average_interval_contains_the_mean():
     table = common.event_average(ax, [-1, 0, 1], [[0, 1, 0], [1, 2, 1]],
                                  load_theme(), bootstrap=100).data
     assert ((table["lo"] <= table["mean"]) & (table["mean"] <= table["hi"])).all()
+    assert table["n_events"].tolist() == [2, 2, 2]
     plt.close(fig)
 
 
@@ -118,6 +209,32 @@ def test_territory_writes_tables_and_fixed_field_stacks():
     assert output["territory_frame"]["cumulative_unique_px"].is_monotonic_increasing
 
 
+def test_territory_coverage_order_test_preserves_active_frames_and_detects_late_discovery():
+    occupancy = np.zeros((12, 1, 6), dtype=bool)
+    active_frames = np.array([1, 3, 5, 7, 9, 11])
+    for slot, frame_index in enumerate(active_frames):
+        occupancy[frame_index, 0, 0] = True
+        if slot >= 2:
+            occupancy[frame_index, 0, slot] = True
+
+    units, curves, result = territory.coverage_order_permutation_test(
+        {"cell-a": occupancy}, shuffles=500, random_state=7,
+    )
+
+    observed = curves.drop_duplicates("frame_index").set_index("frame_index")
+    assert observed.loc[0, "observed_coverage_fraction"] == 0.0
+    assert observed.loc[2, "observed_coverage_fraction"] == observed.loc[
+        1, "observed_coverage_fraction"
+    ]
+    assert observed.loc[2, "permutation_median"] == observed.loc[
+        1, "permutation_median"
+    ]
+    assert units.loc[0, "active_frames"] == len(active_frames)
+    assert units.loc[0, "observed_auc"] < units.loc[0, "permutation_median_auc"]
+    assert 0.0 < result["p_value"] <= 1.0
+    assert result["test"] == "two-sided frame-order permutation test"
+
+
 def test_sholl_is_long_by_ring_and_has_reach():
     labels = np.zeros((2, 12, 12), dtype=np.uint16)
     labels[:, 4:8, 4:8] = 1
@@ -137,24 +254,47 @@ def test_sholl_is_long_by_ring_and_has_reach():
             assert f"sholl_{name}{sholl.SUFFIX[scaling]}" in reach
 
 
-def test_regimes_are_stably_ordered_by_area_centroid():
+def test_default_classifier_crosses_three_size_and_three_movement_levels():
     rows = []
-    for identity in (1, 2):
-        for frame_index in range(8):
-            high = frame_index >= 4
+    identity = 1
+    for area in (10.0, 100.0, 1000.0):
+        for movement in (0.1, 1.0, 10.0):
             rows.append({
-                "identity": identity, "frame_index": frame_index, "hours": frame_index / 2,
-                "area_px": 100 if high else 10, "circularity": 0.8 if high else 0.2,
-                "solidity": 0.9 if high else 0.3, "ramification_index": 1 if high else 3,
-                "aspect_ratio": 1 if high else 2, "skeleton_branches": 2 if high else 8,
-                "turnover_index": 0.1 if high else 0.4, "step_px_gapless": 0.2,
-                "punctateness": 2 if high else 1,
+                "identity": identity,
+                "frame_index": 0,
+                "hours": 0.0,
+                "area_px": area,
+                "step_px_gapless": movement,
             })
-    context = _context(np.zeros((1, 2, 2)), regimes={"n_regimes": 2, "min_frames_per_cell": 1})
+            identity += 1
+    context = _context(np.zeros((1, 2, 2)), regimes={"min_frames_per_cell": 1})
     output = regimes.derive(pd.DataFrame(rows), context)
+
     profiles = output["regime_profiles"].sort_values("regime")
-    assert profiles["area_px"].is_monotonic_increasing
+    assert {"regime", "regime_label", "regime_size_level",
+            "regime_movement_level", "regime_observations", "area_px",
+            "step_px_gapless"} == set(profiles.columns)
+    assert list(profiles["regime"]) == list(range(9))
+    assert set(output["regimes"]["regime"]) == set(range(9))
+    assert list(profiles["regime_label"]) == [
+        f"{size.title()} size, {movement} movement"
+        for size in regimes.LEVELS for movement in regimes.LEVELS
+    ]
+    assigned = output["regimes"].set_index(["regime_size_level", "regime_movement_level"])
+    for size_index, size in enumerate(regimes.LEVELS):
+        for movement_index, movement in enumerate(regimes.LEVELS):
+            assert assigned.loc[(size, movement), "regime"] == size_index * 3 + movement_index
     assert {"regime_distance", "regime_second", "regime_margin"} <= set(output["regimes"])
+
+
+def test_a_cell_frame_without_a_preceding_movement_is_not_classified():
+    frame = pd.DataFrame({
+        "identity": [1, 1, 1], "frame_index": [0, 1, 2], "hours": [0.0, 0.5, 1.0],
+        "area_px": [10.0, 20.0, 30.0], "step_px_gapless": [np.nan, 1.0, 2.0],
+    })
+    output = regimes.derive(
+        frame, _context(np.zeros((1, 2, 2)), regimes={"min_frames_per_cell": 1}))
+    assert list(output["regimes"]["frame_index"]) == [1, 2]
 
 
 def test_coupling_never_invents_lag_pairs_across_missing_frames():

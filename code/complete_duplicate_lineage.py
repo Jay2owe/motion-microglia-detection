@@ -118,7 +118,14 @@ def discover(labels: np.ndarray, points: pd.DataFrame,
             "discovery_status": "eligible" if not reasons else "rejected",
             "discovery_reason": "eligible" if not reasons else "|".join(reasons),
         })
-    return pd.DataFrame(rows), scored
+    columns = [
+        "proposal_id", "physical_track", "first_frame", "last_frame",
+        "span_frames", "visible_frames", "duplicate_support_frames",
+        "duplicate_owner_count", "foreign_owner_frames",
+        "foreign_owner_fraction", "encounter_fraction", "minimum_span_frames",
+        "minimum_duplicate_frames", "discovery_status", "discovery_reason",
+    ]
+    return pd.DataFrame(rows, columns=columns), scored
 
 
 def _component_near(frame: np.ndarray, owner: int, point) -> np.ndarray | None:

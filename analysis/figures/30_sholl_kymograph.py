@@ -1,30 +1,27 @@
 """Figure 30: radial occupancy from soma over time.
 
-How far out from the soma a cell holds ground, frame by frame. Annuli clipped
-by the edge of the field are dropped rather than counted as empty, which is why
-the outer rings thin out rather than falling to zero.
+Each panel follows one cell. Colour shows how much of each radial ring around
+its soma belongs to the cell at each time. Annuli clipped by the field edge or
+another cell are omitted rather than counted as empty.
 
     python analysis/figures/30_sholl_kymograph.py <run>
-    ... --rings 12               keep only the inner rings
-    ... --cells 6                how many cells get a kymograph
+    ... --rings 4                keep only the four inner rings
+    ... --cells 7,12,40          choose cells explicitly
     ... --scaling global         rings of one fixed width instead of per-cell
 
 ``sholl.csv`` holds the profile twice, under two ring widths. ``cell`` divides
-each cell's own reach, so ring 3 is "half way out" for every cell and shapes are
-comparable between a small cell and a large one; ``global`` uses one width for
-the whole movie, so the y axis is an absolute distance and profiles can be
-pooled. Drawing both at once would average two different x axes, so the figure
-takes one and says which in the subtitle.
+each cell's current 95% reach, so the vertical axis is 0--100% and shapes are
+comparable between a small cell and a large one. ``global`` uses one fixed
+width for the whole movie, so the vertical axis is an absolute distance.
 """
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from matplotlib.lines import Line2D
 import numpy as np
 
-from _derive import _require_columns, _selected_identities
+from _derive import _selected_identities
 from _metrics import semantic_label
 from _schema import FigureContext, FigureResult, Option, Panel, Table, figure, run_figure
 
@@ -37,14 +34,11 @@ from panels import morphology as morphology_panels
     slug="sholl-kymograph",
     summary="radial occupancy from soma over time",
     title="Radial occupancy from soma over time",
-    reads=(Table("sholl.csv", module="sholl"),
-           Table("cell_frame.csv", module="sholl")),
+    reads=(Table("sholl.csv", module="sholl"),),
     panels=(
         Panel("kymograph", morphology_panels.sholl_kymograph,
-              title="Radial occupancy through time"),
-        Panel("reach", common.trace, title="Outermost persistent reach"),
-        Panel("profile", morphology_panels.sholl_profile,
-              title="Radial profiles at selected times"),
+              item_width_inches=4.0, item_height_inches=3.0,
+              title="Each panel is one cell; colour is the fraction of each radial ring occupied"),
     ),
     options=(
         Option("metrics", default="occupancy", cast=str, metavar="COL",
@@ -55,14 +49,10 @@ from panels import morphology as morphology_panels
                help="ring width: cell (each cell's own reach) or global (one width)"),
         Option("hour_ticks", default=24.0),
     ),
-    grammar="surfaces reach traces and radial profiles",
+    grammar="time-by-radius kymograph small multiples",
 )
 def build(ctx: FigureContext) -> FigureResult:
     sholl = ctx.table("sholl.csv")
-    # reach_p95 and the soma centre are columns of cell_frame: they are one
-    # row per cell per frame, the same rows cell_frame already carries.
-    reach = ctx.table("cell_frame.csv")
-    _require_columns(reach, ["reach_p95"], "cell_frame.csv", "sholl")
     metric = ctx.option("metrics")
     if metric not in {"occupancy", "intersections"}:
         raise SystemExit("--metrics must be occupancy or intersections")
@@ -83,46 +73,48 @@ def build(ctx: FigureContext) -> FigureResult:
             "unlabelled ring width; re-run the analysis or drop --scaling")
     cells = _selected_identities(sholl, ctx.option("cells"))
     data = sholl[sholl["identity"].isin(cells)].copy()
+    full_ring_count = int(data["ring"].max()) + 1
     requested_rings = ctx.option("rings")
-    if requested_rings is not None and requested_rings > 0:
-        maximum = int(data["ring"].max()) + 1
-        data["display_ring"] = np.minimum((data["ring"] * requested_rings // maximum).astype(int), requested_rings - 1)
-        grouped = data.groupby(["identity", "frame_index", "hours", "display_ring"], as_index=False).agg(
-            radius_inner=("radius_inner", "min"), radius_outer=("radius_outer", "max"),
-            annulus_px=("annulus_px", "sum"), occupied_px=("occupied_px", "sum"),
-            intersections=("intersections", "sum"),
-        )
-        grouped["occupancy"] = grouped["occupied_px"] / grouped["annulus_px"].replace(0, np.nan)
-        data = grouped.rename(columns={"display_ring": "ring"})
-    # Drop rings the field edge or a neighbour ate, keeping rings that are
-    # merely small. What counts as "eaten" depends on the scaling, because the
-    # two disagree about whether one ring index is one area.
-    #
-    # Under `global` every cell shares a ring width, so ring 3 has the same
-    # area for everyone and a cell whose ring 3 is half the size of everyone
-    # else's lost the difference to a clip. Compare across cells.
-    #
-    # Under `cell` the width is the cell's own reach over n_rings, so ring 3 is
-    # a different area for every cell *by construction* - that is the point of
-    # the scaling. The cross-cell test would then discard every small cell at
-    # every ring, which is how this figure used to fail with a one-row heatmap.
-    # A cell's own ring is constant through time unless something clips it, so
-    # compare each frame against that cell's own best frame at the same ring.
-    if scaling == "cell":
-        reference = data.groupby(["identity", "ring"])["annulus_px"].transform(
-            lambda values: values.quantile(0.9))
-        data = data[data["annulus_px"] >= 0.5 * reference].copy()
-    else:
-        keep = data.groupby(["identity", "ring"])["annulus_px"].median()
-        ceiling = keep.groupby(level=1).transform(lambda values: values.quantile(0.9))
-        valid = set(keep[keep >= 0.5 * ceiling].index)
-        data = data[data.set_index(["identity", "ring"]).index.isin(valid)].copy()
+    if requested_rings is not None:
+        if requested_rings < 1:
+            raise SystemExit("--rings needs a positive number of inner rings")
+        data = data[data["ring"] < min(int(requested_rings), full_ring_count)].copy()
+    # Compare the available pixels with the full geometric annulus. This stays
+    # valid when cell-scaled radii change between frames; comparing against a
+    # cell's largest annulus would wrongly label a genuinely smaller frame as
+    # clipped.
+    unit_per_pixel = (float(ctx.scale.microns_per_pixel)
+                      if ctx.scale.calibrated else 1.0)
+    radius_inner_px = data["radius_inner"].to_numpy(float) / unit_per_pixel
+    radius_outer_px = data["radius_outer"].to_numpy(float) / unit_per_pixel
+    expected_annulus_px = np.pi * (
+        radius_outer_px ** 2 - radius_inner_px ** 2
+    )
+    data["annulus_support_fraction"] = np.minimum(
+        data["annulus_px"].to_numpy(float) / np.maximum(expected_annulus_px, 1e-12),
+        1.0,
+    )
+    data = data[data["annulus_support_fraction"] >= 0.5].copy()
     panels = ctx.panels()
-    fig, axes = ctx.layout(panels)
+    shown = cells
+    columns = min(4, max(1, len(shown)))
+    rows = max(1, int(np.ceil(len(shown) / columns)))
+    kymograph_panel = ctx.spec.panel("kymograph")
+    minimum_sizes = ({"kymograph": kymograph_panel.grid_minimum(
+        len(shown), columns)} if "kymograph" in panels else None)
+    fig, axes = ctx.layout(
+        panels,
+        minimum_sizes=minimum_sizes,
+        bottom_inches=3.2,
+    )
+    plot_axes = []
     if "kymograph" in axes:
         rect = tuple(axes["kymograph"].get_position().bounds); axes["kymograph"].remove()
-        shown = cells[:12]; columns = min(6, len(shown)); rows = int(np.ceil(len(shown) / columns))
-        gap = 0.014; width = (rect[2] - gap * (columns - 1)) / columns; height = (rect[3] - gap * (rows - 1)) / rows
+        scale = ctx.theme.canvas_scale
+        gap_x = kymograph_panel.item_gap_inches * scale / fig.get_figwidth()
+        gap_y = kymograph_panel.item_gap_inches * scale / fig.get_figheight()
+        width = (rect[2] - gap_x * (columns - 1)) / columns
+        height = (rect[3] - gap_y * (rows - 1)) / rows
         made, heat_handles = [], []
         colour_min = 0.0
         colour_max = 1.0 if metric == "occupancy" else max(float(data[metric].max()), 1.0)
@@ -131,22 +123,37 @@ def build(ctx: FigureContext) -> FigureResult:
             pivot = group.pivot(index="ring", columns="hours", values=metric)
             if pivot.empty:
                 continue
-            radii = group.groupby("ring")[["radius_inner", "radius_outer"]].mean().mean(axis=1).reindex(pivot.index)
-            reach_cell = reach[reach["identity"] == identity].set_index("hours")["reach_p95"].reindex(pivot.columns)
+            if scaling == "cell":
+                radii = (pivot.index.to_numpy(float) + 0.5) / full_ring_count * 100.0
+                y_label = "Distance from soma (% of current 95% reach)"
+            else:
+                radii = group.groupby("ring")[["radius_inner", "radius_outer"]].mean().mean(
+                    axis=1).reindex(pivot.index).to_numpy(float)
+                y_label = f"Distance from soma ({ctx.length_label})"
             row, column = divmod(position, columns)
-            ax = fig.add_axes([rect[0] + column * (width + gap), rect[1] + (rows - 1 - row) * (height + gap), width, height])
+            ax = fig.add_axes([
+                rect[0] + column * (width + gap_x),
+                rect[1] + (rows - 1 - row) * (height + gap_y), width, height])
             heat_handle = morphology_panels.sholl_kymograph(
                 ax, pivot.to_numpy(float), pivot.columns, radii, ctx.theme,
-                reach=reach_cell.to_numpy(float), hour_ticks=ctx.hour_ticks,
-                y_label=f"Distance from soma ({ctx.length_label})",
-                vmin=colour_min, vmax=colour_max,
+                hour_ticks=ctx.hour_ticks, y_label=y_label,
+                contour_at=None, vmin=colour_min, vmax=colour_max,
             ).extra["handle"]
             ax.set_xlabel(""); ax.set_ylabel("")
+            if scaling == "cell":
+                maximum_percent = (
+                    100.0 * (float(pivot.index.max()) + 1.0) / full_ring_count
+                )
+                ax.set_ylim(0, maximum_percent)
+                ax.set_yticks([
+                    tick for tick in (0, 25, 50, 75, 100)
+                    if tick <= maximum_percent
+                ])
             if row != rows - 1:
                 ax.set_xticks([])
             if column != 0:
                 ax.set_yticks([])
-            ax.text(0.03, 0.97, str(identity), transform=ax.transAxes, va="top",
+            ax.text(0.03, 0.97, f"Cell {identity}", transform=ax.transAxes, va="top",
                     fontsize=ctx.theme.size("caption"), color=ctx.theme.colour("ink"),
                     bbox={"facecolor": "white", "alpha": 0.72, "edgecolor": "none", "pad": 1.0})
             made.append(ax); heat_handles.append(heat_handle)
@@ -156,57 +163,44 @@ def build(ctx: FigureContext) -> FigureResult:
                      fontsize=ctx.theme.size("panel"), fontweight="bold", va="bottom")
             common.inset_colour_bar(made[-1], heat_handles[-1], ctx.theme,
                                     label=semantic_label(metric))
-            fig.legend(
-                handles=[Line2D([], [], color=ctx.theme.colour("ink"),
-                                label="95% reach")],
-                loc="upper center", bbox_to_anchor=(0.60, rect[1] - 0.045),
-                ncol=1, frameon=False, fontsize=ctx.theme.size("caption"),
+            fig.text(
+                rect[0] + rect[2] / 2,
+                rect[1] - 0.62 * scale / fig.get_figheight(),
+                "Hours from start of recording", ha="center", va="top",
+                fontsize=ctx.theme["axis_size"], color=ctx.theme.colour("ink"),
+            )
+            fig.text(
+                rect[0] - 0.78 * scale / fig.get_figwidth(),
+                rect[1] + rect[3] / 2,
+                ("Distance from soma (% of current 95% reach)" if scaling == "cell"
+                 else f"Distance from soma ({ctx.length_label})"),
+                ha="center", va="center", rotation=90,
+                fontsize=ctx.theme["axis_size"], color=ctx.theme.colour("ink"),
             )
             made[0]._semantic_legend_handled = True
-    if "profile" in axes:
-        identity = cells[0]
-        group = data[data["identity"] == identity]
-        pivot = group.pivot(index="ring", columns="hours", values=metric)
-        radii = group.groupby("ring")[["radius_inner", "radius_outer"]].mean().mean(axis=1).reindex(pivot.index)
-        positions = np.linspace(0, len(pivot.columns) - 1, min(4, len(pivot.columns))).round().astype(int)
-        profile_roles = ("morphology", "reporter", "surveillance", "motility")
-        for profile_index, position in enumerate(positions):
-            morphology_panels.sholl_profile(
-                axes["profile"], radii, pivot.iloc[:, position], ctx.theme,
-                look=common.Look(colour=ctx.theme.colour(profile_roles[profile_index % len(profile_roles)])),
-                x_label=f"Distance from soma ({ctx.length_label})",
-                y_label=semantic_label(metric),
-                label=f"{float(pivot.columns[position]):g} h",
-            )
-        axes["profile"].set_title(f"Cell {identity}: radial profiles at selected times", loc="left")
-        axes["profile"].set_ylabel("Radial-ring occupancy\n(fraction)")
-    if "reach" in axes:
-        for cell_index, identity in enumerate(cells):
-            group = reach[reach["identity"] == identity].sort_values("hours")
-            common.trace(axes["reach"], group["hours"], group["reach_p95"], ctx.theme,
-                         role="morphology", linewidth=ctx.theme.stroke("guide"),
-                         hour_ticks=ctx.hour_ticks,
-                         label="One cell" if cell_index == 0 else "",
-                         y_label=f"95% reach ({ctx.length_label})")
+            plot_axes = made
     required = [column for column in
                 ["identity", "frame_index", "hours", "scaling", "ring",
                  "radius_inner", "radius_outer", "occupancy", "intersections",
-                 "annulus_px"]
+                 "annulus_px", "annulus_support_fraction"]
                 if column in data.columns]
     return FigureResult(
         figure=fig,
-        axes=list(axes.values()),
+        axes=plot_axes or list(axes.values()),
         figure_data=data[required],
-        subtitle=(f"{len(cells)} identities; "
-                  + ("rings divide each cell's own 95% reach, so a radius is that cell's"
+        subtitle=(f"{len(cells)} cells; "
+                  + ("rings divide each cell's current 95% reach, so the vertical scale is relative"
                      if scaling == "cell" else
                      "rings are one fixed width across the movie, so a radius is an absolute distance")
-                  + ("; annuli below half that cell's own best support at the same ring are omitted."
-                     if scaling == "cell" else
-                     "; field-clipped annuli below half the ring-specific reference support are omitted.")),
+                  + "; annuli with less than half their full geometric area available are omitted."),
         footnote=ctx.provenance_footnote(),
-        auxiliary={"reach.csv": reach[reach["identity"].isin(cells)],
-                                  **ctx.provenance_auxiliary()},
+        auxiliary=ctx.provenance_auxiliary(),
+        readme=(
+            "Each small multiple is the generic `panels.morphology.sholl_kymograph` "
+            "panel, so the same one-cell view can be embedded in a cell report card. "
+            "No selected-time radial profile or multi-cell reach trace is drawn: those "
+            "mix different questions with the time-by-radius result."
+        ),
     )
 
 

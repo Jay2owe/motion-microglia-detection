@@ -173,7 +173,7 @@ def describe(column: str) -> Metric:
     """The vocabulary for one column, invented from its name if it has none.
 
     A per-cell summary of a known measurement keeps that measurement's wording:
-    ``turnover_index_median`` is pixels replaced, and how it was summarised is
+    ``turnover_index_median`` is the footprint-turnover fraction, and how it was summarised is
     the builder's sentence to add, not a different quantity.
     """
     if column in METRICS:

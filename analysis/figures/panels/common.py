@@ -26,10 +26,14 @@ colour of this graph" are one option rather than two.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+
+import textwrap
 
 import numpy as np
 import pandas as pd
+
+from analysis import circadian as workbench
 
 from ._contract import PanelResult
 
@@ -40,13 +44,14 @@ if TYPE_CHECKING:                       # names used only in annotations
 
 __all__ = [
     "Look", "Mark", "PanelResult", "resolve_look",
-    "image_tile", "image_strip",
-    "trace", "cosinor_curve", "trace_stack",
+    "image_tile", "image_strip", "paired_image_strip",
+    "trace", "trace_overlay", "cosinor_curve", "harmonic_curve", "trace_stack",
     "raster", "category_strip", "colour_bar", "inset_colour_bar", "semantic_legend",
     "histogram", "reference_lines",
     "scatter", "scatter_with_margins",
-    "dumbbell", "lollipop",
-    "rose", "vectors", "matrix", "surface", "ridgeline", "stacked_area",
+    "dumbbell", "lollipop", "ranked_rate",
+    "phase_map", "rose", "vectors", "matrix", "surface", "stacked_histogram",
+    "ridgeline", "stacked_area",
     "flow", "chord", "paired_slopes", "event_average", "hexbin", "dendrogram",
 ]
 
@@ -80,6 +85,33 @@ class Mark:
     at: float = 0.94
 
 
+def series_colours(theme: Any, count: int) -> list[str]:
+    """One distinguishable colour per series, however many there are.
+
+    The theme's role cycle is the right answer up to its length and refuses
+    beyond it, on the ground that repeating a colour draws two series the
+    reader will read as one. That refusal is correct and unhelpful to a page
+    with seven fitted signals on it, so past the cycle this samples the theme's
+    sequential map instead.
+
+    The two are not interchangeable and the switch is visible on the page: role
+    colours are categorical and unordered, a sampled map is ordered. A figure
+    using this must therefore have already put its series in a stated order, or
+    the reader will infer one from the colours that is not there.
+    """
+    import matplotlib
+
+    if count <= len(theme.cycle()):
+        return theme.cycle(count)
+    cmap = matplotlib.colormaps[theme.style["sequential_cmap"]]
+    return [matplotlib.colors.to_hex(cmap(position))
+            for position in np.linspace(0.08, 0.92, count)]
+
+
+#: One line break, named so that source edits cannot turn it into a real one.
+NEWLINE = chr(10)
+
+
 def resolve_look(theme: Any, wanted: str | None, fallback_role: str = "morphology") -> Look:
     """Turn one user string into either a flat colour or a colour map.
 
@@ -94,6 +126,25 @@ def resolve_look(theme: Any, wanted: str | None, fallback_role: str = "morpholog
     try:
         return Look(cmap=matplotlib.colormaps[wanted])
     except (KeyError, AttributeError):
+        pass
+    # Auto-Organotypic owns the laboratory's established bioluminescence
+    # lookup tables.  Asking for one here should paint a still exactly as that
+    # package paints a movie, rather than approximating it with a theme colour.
+    try:
+        from auto_organotypic.render import luts as organotypic_luts
+
+        try:
+            return Look(cmap=organotypic_luts.colormap(wanted))
+        except ValueError:
+            # ImageJ-style single-colour LUTs are ramps rather than anchored
+            # maps. Convert their exact 256-level table into a Matplotlib map
+            # instead of falling through to a flat theme colour, which image
+            # panels cannot use to encode intensity.
+            if wanted in organotypic_luts.LUT_RAMPS:
+                levels = np.linspace(0.0, 1.0, 256, dtype=np.float32)
+                rgb = organotypic_luts.paint(levels, wanted).astype(float) / 255.0
+                return Look(cmap=matplotlib.colors.ListedColormap(rgb, name=wanted))
+    except ImportError:
         pass
     return Look(colour=theme.colour(wanted))
 
@@ -219,6 +270,114 @@ def image_strip(
     )
 
 
+def paired_image_strip(
+    figure: Any,
+    rect: tuple[float, float, float, float],
+    before_images: Sequence[np.ndarray],
+    after_images: Sequence[np.ndarray],
+    theme: Any,
+    *,
+    before_masks: Sequence[np.ndarray] | None = None,
+    after_masks: Sequence[np.ndarray] | None = None,
+    titles: Sequence[tuple[str, str]] | None = None,
+    before_role: str = "motility",
+    after_role: str = "outline",
+    within_pair_gap: float = 0.0022,
+    between_pair_gap: float = 0.018,
+    percentiles: tuple[float, float] = (2.0, 99.5),
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> PanelResult:
+    """Matched before/after crops with one contrast and visible pair gaps.
+
+    The before outline is repeated over the after image, so retained and newly
+    occupied regions can be read spatially rather than inferred from two nearby
+    pictures. The caller supplies equally scaled crops, keeping selection and
+    scientific interpretation outside this generic image-grid panel.
+    """
+    from matplotlib.colors import to_rgba
+    from skimage.segmentation import find_boundaries
+
+    before_images = list(before_images)
+    after_images = list(after_images)
+    if len(before_images) != len(after_images):
+        raise ValueError("paired_image_strip needs one after image for every before image")
+    count = len(before_images)
+    if before_masks is not None and len(before_masks) != count:
+        raise ValueError("paired_image_strip needs one before mask per image pair")
+    if after_masks is not None and len(after_masks) != count:
+        raise ValueError("paired_image_strip needs one after mask per image pair")
+    if titles is not None and len(titles) != count:
+        raise ValueError("paired_image_strip needs one title pair per image pair")
+    if not count:
+        return PanelResult(
+            data=pd.DataFrame(columns=["pair", "state", "title", "vmin", "vmax"]),
+            axes=[], extra={"vmin": float("nan"), "vmax": float("nan")},
+        )
+
+    images = [image for pair in zip(before_images, after_images) for image in pair]
+    if vmin is None or vmax is None:
+        pooled = np.concatenate([np.asarray(image, dtype=float).ravel() for image in images])
+        low, high = np.percentile(pooled, percentiles)
+        vmin = low if vmin is None else vmin
+        vmax = high if vmax is None else vmax
+
+    left, bottom, width, height = rect
+    available = width - count * within_pair_gap - (count - 1) * between_pair_gap
+    each = available / (2 * count)
+    if each <= 0:
+        raise ValueError("paired-image gaps leave no room for the image tiles")
+
+    axes = []
+    rows: list[dict[str, Any]] = []
+    x = left
+    for pair in range(count):
+        pair_titles = ("Before", "After") if titles is None else titles[pair]
+        pair_images = (before_images[pair], after_images[pair])
+        pair_masks = (
+            None if before_masks is None else before_masks[pair],
+            None if after_masks is None else after_masks[pair],
+        )
+        for state, image, mask, title in zip(
+            ("before", "after"), pair_images, pair_masks, pair_titles
+        ):
+            ax = figure.add_axes([x, bottom, each, height])
+            role = before_role if state == "before" else after_role
+            drawn = image_tile(
+                ax, image, theme, mask=mask, vmin=vmin, vmax=vmax,
+                title=title, outline_role=role,
+            )
+            reference_px = 0
+            if state == "after" and before_masks is not None:
+                reference = np.asarray(before_masks[pair], dtype=bool)
+                if reference.any():
+                    overlay = np.zeros((*reference.shape, 4))
+                    overlay[find_boundaries(reference, mode="outer")] = to_rgba(
+                        theme.colour(before_role)
+                    )
+                    ax.imshow(overlay, interpolation="nearest")
+                    reference_px = int(np.count_nonzero(reference))
+            row = drawn.data.iloc[0].to_dict()
+            row.update({
+                "pair": pair,
+                "state": state,
+                "outline_role": role,
+                "before_reference_px": reference_px,
+            })
+            rows.append(row)
+            axes.append(ax)
+            x += each
+            if state == "before":
+                x += within_pair_gap
+        if pair < count - 1:
+            x += between_pair_gap
+
+    return PanelResult(
+        data=pd.DataFrame(rows), axes=axes,
+        extra={"vmin": float(vmin), "vmax": float(vmax)},
+    )
+
+
 # ----------------------------------------------------------------- traces
 
 def trace(
@@ -279,6 +438,62 @@ def trace(
         data=pd.DataFrame({"hours": hours, "value": values}), axes=ax)
 
 
+def trace_overlay(
+    ax: Any,
+    hours: Sequence[float],
+    series: dict[str, Sequence[float]],
+    theme: Any,
+    *,
+    looks: dict[str, Look] | None = None,
+    labels: dict[str, str] | None = None,
+    normalise: str = "z",
+    hour_ticks: float | None = None,
+    x_label: str = "Hours from start of recording",
+) -> PanelResult:
+    """Several named traces on one axis, normally in within-series SD units.
+
+    Measurements with different units cannot honestly share one vertical axis.
+    The default therefore centres each trace and divides it by its own standard
+    deviation. ``normalise='none'`` remains available when the caller knows the
+    series already share a unit.
+    """
+    hours = np.asarray(hours, dtype=float)
+    looks = looks or {}
+    labels = labels or {}
+    rows = []
+    for index, (name, source) in enumerate(series.items()):
+        values = np.asarray(source, dtype=float)
+        if values.shape != hours.shape:
+            raise ValueError(
+                f"trace {name!r} has {values.size} values for {hours.size} times")
+        if normalise == "z":
+            spread = float(np.nanstd(values))
+            plotted = ((values - float(np.nanmean(values))) / spread
+                       if np.isfinite(spread) and spread > 0
+                       else np.zeros_like(values))
+        elif normalise == "none":
+            plotted = values.copy()
+        else:
+            raise ValueError("normalise must be z or none")
+        look = looks.get(name) or Look(
+            colour=series_colours(theme, len(series))[index])
+        trace(
+            ax, hours, plotted, theme, look=look,
+            label=labels.get(name, name.replace("_", " ")),
+            hour_ticks=hour_ticks, x_label=x_label,
+        )
+        rows.extend({
+            "series": name,
+            "hours": float(hour),
+            "source_value": float(raw),
+            "value": float(shown),
+            "normalise": normalise,
+        } for hour, raw, shown in zip(hours, values, plotted))
+    ax.set_ylabel("Within-trace standard deviations" if normalise == "z" else "Value")
+    ax.legend(frameon=False, ncol=max(1, min(3, len(series))))
+    return PanelResult(data=pd.DataFrame(rows), axes=ax)
+
+
 def cosinor_curve(
     ax: Any,
     hours: Sequence[float],
@@ -286,10 +501,14 @@ def cosinor_curve(
     theme: Any,
     *,
     period_hours: float = 24.0,
+    detrend: str = str(workbench.DETREND_DEFAULTS["detrend"]),
+    detrend_window_hours: float = float(
+        workbench.DETREND_DEFAULTS["detrend_window_hours"]),
+    detrend_options: dict | None = None,
     role: str = "fit",
     linestyle: tuple = (0, (6, 3)),
 ) -> PanelResult:
-    """A fixed-period cosine plus a straight line, drawn over a trace.
+    """A fixed-period cosine over the selected Workbench baseline.
 
     Refitted here rather than read from ``rhythms.csv`` because the table stores
     the fit's parameters, not the curve; this is the same model the rhythms
@@ -306,16 +525,62 @@ def cosinor_curve(
             axes=ax, extra={"fitted": empty},
         )
 
-    slope, intercept = np.polyfit(hours[usable], values[usable], 1)
-    trend = slope * hours + intercept
-    omega = 2 * np.pi / float(period_hours)
-    design = np.column_stack([np.ones(hours.size), np.cos(omega * hours), np.sin(omega * hours)])
-    coefficients, *_ = np.linalg.lstsq(
-        design[usable], (values - trend)[usable], rcond=None
+    result = workbench.detrend_trace(
+        hours[usable], values[usable],
+        {**dict(detrend_options or {}), "detrend": detrend,
+         "detrend_window_hours": detrend_window_hours},
     )
-    fitted = design @ coefficients + trend
+    residual = np.full(hours.shape, np.nan, dtype=float)
+    baseline = np.full(hours.shape, np.nan, dtype=float)
+    residual[usable] = np.asarray(result["values"], dtype=float)
+    baseline[usable] = np.asarray(result["baseline"], dtype=float)
+    panel = harmonic_curve(
+        ax, hours, residual, theme, period_hours=period_hours,
+        baseline=baseline, role=role, linestyle=linestyle,
+    )
+    return PanelResult(
+        data=panel.data.assign(
+            baseline=baseline,
+            detrend=detrend,
+            detrend_window_hours=float(detrend_window_hours),
+        ),
+        axes=ax,
+        extra={**panel.extra, "baseline": baseline, "detrended": residual},
+    )
+
+
+def harmonic_curve(
+    ax: Any,
+    hours: Sequence[float],
+    values: Sequence[float],
+    theme: Any,
+    *,
+    period_hours: float,
+    baseline: Sequence[float] | None = None,
+    role: str = "fit",
+    colour: str | None = None,
+    linestyle: tuple = (0, (6, 3)),
+) -> PanelResult:
+    """An explicit descriptive Workbench cosinor at an estimated period."""
+    hours = np.asarray(hours, dtype=float)
+    values = np.asarray(values, dtype=float)
+    usable = np.isfinite(hours) & np.isfinite(values)
+    fitted = np.full(hours.shape, np.nan, dtype=float)
+    if usable.sum() < 4 or not np.isfinite(period_hours) or period_hours <= 0:
+        return PanelResult(
+            data=pd.DataFrame({"hours": hours, "fitted": fitted}),
+            axes=ax, extra={"fitted": fitted},
+        )
+    fitted = workbench.descriptive_cosinor_fitted_values(
+        hours, values, float(period_hours)
+    )
+    if baseline is not None:
+        baseline_values = np.asarray(baseline, dtype=float)
+        if baseline_values.shape != hours.shape:
+            raise ValueError("harmonic baseline must have one value per hour")
+        fitted = fitted + baseline_values
     ax.plot(
-        hours, fitted, color=theme.colour(role),
+        hours, fitted, color=colour or theme.colour(role),
         linewidth=theme.stroke("emphasis"), linestyle=linestyle,
     )
     return PanelResult(
@@ -489,12 +754,41 @@ def inset_colour_bar(
     label: str,
     ticks: Sequence[float] | None = None,
     ticklabels: Sequence[str] | None = None,
+    width_inches: float | None = None,
+    height_inches: float | None = None,
+    gap_inches: float | None = None,
 ) -> "Colorbar":
-    """A compact scale key attached to the right of one axes."""
-    colour_ax = ax.inset_axes([1.018, 0.12, 0.022, 0.76])
-    bar = ax.figure.colorbar(mappable, cax=colour_ax, ticks=ticks)
-    bar.set_label(label, fontsize=theme.size("caption"))
-    bar.ax.tick_params(labelsize=theme.size("caption"), width=theme.stroke("hairline"))
+    """The canonical vertical colour-map key, in physical rather than relative size."""
+    figure = ax.figure
+    position = ax.get_position()
+    scale = theme.canvas_scale
+    width = float(theme["colour_bar_width_inches"] if width_inches is None
+                  else width_inches)
+    height = float(theme["colour_bar_height_inches"] if height_inches is None
+                   else height_inches)
+    gap = float(theme["colour_bar_gap_inches"] if gap_inches is None else gap_inches)
+    if not all(np.isfinite(value) for value in (width, height, gap)):
+        raise ValueError("colour-bar dimensions must be finite")
+    if width <= 0 or height <= 0 or gap < 0:
+        raise ValueError(
+            "colour-bar width and height must be positive and its gap non-negative"
+        )
+    width_fraction = width * scale / figure.get_figwidth()
+    height_fraction = min(height * scale / figure.get_figheight(), position.height)
+    gap_fraction = gap * scale / figure.get_figwidth()
+    colour_ax = figure.add_axes([
+        position.x1 + gap_fraction,
+        position.y0 + (position.height - height_fraction) / 2,
+        width_fraction,
+        height_fraction,
+    ])
+    bar = figure.colorbar(mappable, cax=colour_ax, ticks=ticks)
+    bar.set_label(label, fontsize=theme.size("annotation"))
+    bar.ax.tick_params(
+        labelsize=theme.size("caption"), width=theme.stroke("hairline"),
+        length=theme["tick_mark_length"] * 0.65,
+    )
+    bar.outline.set_linewidth(theme.stroke("hairline"))
     if ticklabels is not None:
         bar.ax.set_yticklabels(list(ticklabels))
     return bar
@@ -756,6 +1050,8 @@ def dumbbell(
     right_colours: Sequence[str] | None = None,
     connector_role: str = "reference",
     hollow_role: str = "reference",
+    left_marker: str = "o",
+    right_marker: str = "o",
     annotations: Sequence[str] | None = None,
     annotation_colours: Sequence[str] | None = None,
     left_label: str = "",
@@ -779,12 +1075,12 @@ def dumbbell(
     ax.scatter(
         left, positions, s=theme.point_area(1.5), color=theme.colour("page"),
         edgecolor=theme.colour(hollow_role), linewidth=theme.stroke("emphasis"),
-        zorder=3, label=left_label or None,
+        marker=left_marker, zorder=3, label=left_label or None,
     )
     ax.scatter(
         right, positions, s=theme.point_area(1.5),
         color=list(right_colours) if right_colours is not None else theme.colour("significant"),
-        edgecolor="none", zorder=4, label=right_label or None,
+        edgecolor="none", marker=right_marker, zorder=4, label=right_label or None,
     )
 
     if annotations is not None:
@@ -837,11 +1133,28 @@ def lollipop(
             value, y, s=theme.point_area(1.7), color=colour, zorder=3, edgecolor="none",
         )
     if annotations is not None:
+        # Away from the baseline, not always to the right, and offset by a share
+        # of the data rather than by a fixed 0.045. A right-hand annotation on a
+        # negative row sits on top of the stem it is annotating, and a fixed
+        # offset is either invisible or a mile off as soon as an axis is not
+        # roughly unit-scaled.
+        span = float(np.nanmax(np.abs(values - baseline))) if len(values) else 0.0
+        pad = 0.035 * (span or 1.0)
+        widest = max((len(str(text)) for text in annotations), default=0)
         for y, (value, text, colour) in enumerate(zip(values, annotations, palette)):
+            beyond = not (value < baseline)
             ax.text(
-                value + 0.045, y, text, va="center", fontsize=theme.size("emphasis"),
+                value + (pad if beyond else -pad), y, text, va="center",
+                ha="left" if beyond else "right", fontsize=theme.size("emphasis"),
                 color=colour, fontweight="bold",
             )
+        # Room for the words. Matplotlib sizes an axes to its marks and not to
+        # the text beside them, so without this the longest annotation runs off
+        # the panel and lands on the row labels of the one next to it.
+        low, high = ax.get_xlim()
+        room = 0.055 * widest * (high - low)
+        ax.set_xlim(low - (room if any(v < baseline for v in values) else 0.0),
+                    high + (room if any(not (v < baseline) for v in values) else 0.0))
 
     ax.set_yticks(positions)
     ax.set_yticklabels(labels, fontsize=theme.size("panel"))
@@ -853,7 +1166,156 @@ def lollipop(
     )
 
 
+def ranked_rate(
+    ax: Any,
+    frame: pd.DataFrame,
+    theme: Any,
+    *,
+    numerator_column: str,
+    denominator_column: str,
+    unit_column: str = "identity",
+    role: str = "highlight",
+    reference: float | None = None,
+    reference_label: str = "All observations",
+    x_label: str = "Units, ranked by rate",
+    y_label: str = "Detected observations (%)",
+) -> PanelResult:
+    """One rate per unit, ranked without confusing exposure with frequency."""
+    needed = {unit_column, numerator_column, denominator_column}
+    missing = needed - set(frame.columns)
+    if missing:
+        raise KeyError(f"ranked_rate is missing columns: {', '.join(sorted(missing))}")
+    data = frame[[unit_column, numerator_column, denominator_column]].copy()
+    data[numerator_column] = pd.to_numeric(data[numerator_column], errors="coerce")
+    data[denominator_column] = pd.to_numeric(data[denominator_column], errors="coerce")
+    data = data[
+        data[numerator_column].notna()
+        & data[denominator_column].notna()
+        & (data[denominator_column] > 0)
+    ].copy()
+    data["rate"] = data[numerator_column] / data[denominator_column]
+    data = data[np.isfinite(data["rate"])].copy()
+    data = data.sort_values(
+        ["rate", denominator_column, unit_column],
+        ascending=[False, False, True], kind="mergesort",
+    ).reset_index(drop=True)
+    data["rank"] = np.arange(1, len(data) + 1)
+    data["rate_percent"] = 100.0 * data["rate"]
+
+    if data.empty:
+        ax.text(0.5, 0.5, "No measurable rates", ha="center", va="center",
+                transform=ax.transAxes, color=theme.colour("caption"))
+        ax.set_axis_off()
+        return PanelResult(data=data, axes=ax)
+
+    colour = theme.colour(role)
+    ax.plot(
+        data["rank"], data["rate_percent"], color=colour,
+        linewidth=theme.stroke("guide"), alpha=0.38, zorder=2,
+    )
+    ax.scatter(
+        data["rank"], data["rate_percent"], color=colour,
+        s=theme.point_area(0.72), edgecolor="none", zorder=3,
+    )
+    if reference is not None and np.isfinite(reference):
+        reference_percent = 100.0 * float(reference)
+        ax.axhline(
+            reference_percent, color=theme.colour("reference"),
+            linewidth=theme.stroke("guide"), linestyle=(0, (5, 3)), zorder=1,
+        )
+        ax.text(
+            0.99, reference_percent, f"{reference_label}: {reference_percent:.1f}%",
+            transform=ax.get_yaxis_transform(), ha="right", va="bottom",
+            fontsize=theme.size("caption"), color=theme.colour("caption"),
+        )
+    ax.set_xlim(0.5, len(data) + 0.5)
+    last_rank = int(data["rank"].iloc[-1])
+    interior = np.linspace(1, last_rank, 5).round().astype(int)
+    ax.set_xticks(sorted(set([1, last_rank, *interior.tolist()])))
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    theme.set_value_ticks(
+        ax, low=0.0, high=float(data["rate_percent"].max()),
+        start=0.0, round_to=20.0,
+    )
+    return PanelResult(data=data, axes=ax)
+
+
 # ---------------------------------------------------------- extended grammar
+
+def phase_map(
+    ax: Any,
+    positions: Any,
+    phases: Sequence[float],
+    theme: Any,
+    *,
+    field: Mapping[str, float] | None = None,
+    period: float = 24.0,
+    phase_unit: str = "h",
+    cmap: Any = None,
+    labels: Sequence[Any] | None = None,
+    point_scale: float = 1.8,
+    invert_y: bool = True,
+    x_label: str = "X position",
+    y_label: str = "Y position",
+) -> PanelResult:
+    """Positions coloured by phase in any user-supplied cycle.
+
+    ``period`` and ``phase_unit`` describe the values supplied by the caller;
+    the panel only wraps and displays them.  It does not fit a rhythm.
+    """
+    import matplotlib
+
+    points = np.asarray(positions, dtype=float)
+    values = np.asarray(phases, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("phase_map positions must be an N by 2 array")
+    if len(points) != len(values):
+        raise ValueError("phase_map needs one phase value per position")
+    if labels is not None and len(labels) != len(values):
+        raise ValueError("phase_map needs one label per position")
+    if not np.isfinite(period) or period <= 0:
+        raise ValueError("phase_map period must be finite and positive")
+    if not np.isfinite(point_scale) or point_scale <= 0:
+        raise ValueError("phase_map point_scale must be finite and positive")
+
+    if cmap is None:
+        chosen = matplotlib.colormaps["twilight_shifted"]
+    elif isinstance(cmap, str):
+        if cmap not in {"twilight", "twilight_shifted", "hsv"}:
+            raise ValueError(f"phase_map needs a cyclic colour map, not {cmap!r}")
+        chosen = matplotlib.colormaps[cmap]
+    else:
+        name = getattr(cmap, "name", "")
+        if name not in {"twilight", "twilight_shifted", "hsv"}:
+            raise ValueError(
+                f"phase_map needs a cyclic colour map, not {name or 'an unnamed map'}"
+            )
+        chosen = cmap
+
+    wrapped = np.mod(values, period)
+    handle = ax.scatter(
+        points[:, 0], points[:, 1], c=wrapped, cmap=chosen,
+        vmin=0, vmax=period, s=theme.point_area(point_scale),
+        edgecolor=theme.colour("page"), linewidth=theme.stroke("hairline"),
+    )
+    if field is not None:
+        ax.set_xlim(0, float(field["width"]))
+        ax.set_ylim((float(field["height"]), 0) if invert_y
+                    else (0, float(field["height"])))
+    elif invert_y:
+        ax.invert_yaxis()
+    ax.set_aspect("equal")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+
+    data = pd.DataFrame({
+        "x": points[:, 0], "y": points[:, 1], "phase": wrapped,
+        "period": float(period), "phase_unit": phase_unit,
+    })
+    if labels is not None:
+        data.insert(0, "unit", list(labels))
+    return PanelResult(data=data, axes=ax, extra={"handle": handle})
 
 def rose(
     ax: Any,
@@ -867,8 +1329,14 @@ def rose(
     role: str = "morphology",
     mean_vector: bool = True,
     label: str = "",
+    tick_step: float | None = None,
+    tick_values: Sequence[float] | None = None,
+    tick_labels: Sequence[str] | None = None,
+    phase_unit: str = "h",
 ) -> PanelResult:
     """A circular histogram on one wrapped period: one row per wedge."""
+    if not np.isfinite(period) or period <= 0:
+        raise ValueError("rose period must be finite and positive")
     values = np.asarray(angles, dtype=float)
     finite = np.isfinite(values)
     values = np.mod(values[finite], period)
@@ -885,6 +1353,21 @@ def rose(
     )
     ax.set_theta_zero_location("N")
     ax.set_theta_direction(-1)
+    if tick_values is None:
+        step = float(period) / 4.0 if tick_step is None else float(tick_step)
+        if not np.isfinite(step) or step <= 0:
+            raise ValueError("rose tick_step must be finite and positive")
+        ticks = np.arange(0.0, float(period), step)
+    else:
+        ticks = np.asarray(tick_values, dtype=float)
+        if not np.isfinite(ticks).all():
+            raise ValueError("rose tick_values must be finite")
+        ticks = np.mod(ticks, period)
+    if tick_labels is not None and len(tick_labels) != len(ticks):
+        raise ValueError("rose needs one tick label per tick value")
+    labels = (list(tick_labels) if tick_labels is not None else
+              [f"{value:g} {phase_unit}".rstrip() for value in ticks])
+    ax.set_xticks(2 * np.pi * ticks / period, labels=labels)
     if mean_vector and values.size:
         vector_weights = np.ones(values.size) if used_weights is None else used_weights
         radians = 2 * np.pi * values / period
@@ -938,8 +1421,12 @@ def vectors(
     complex_result = np.sum(radii * np.exp(1j * theta)) if len(theta) else 0j
     mean_radians = float(np.angle(complex_result) % (2 * np.pi)) if len(theta) else np.nan
     concentration = float(np.abs(complex_result) / total) if total else 0.0
+    # Annotation endpoints do not contribute to Matplotlib's data limits.  Set
+    # the radial scale explicitly or arrows longer than the default 0-1 range
+    # are silently clipped, while short arrows sit inside a mostly empty dial.
+    ceiling = float(np.nanmax(np.abs(radii))) if len(radii) else 1.0
+    ax.set_ylim(0.0, ceiling * 1.08 if ceiling > 0 else 1.0)
     if resultant and len(theta):
-        ceiling = float(np.nanmax(np.abs(radii))) if len(radii) else 1.0
         ax.annotate(
             "", xy=(mean_radians, ceiling * concentration), xytext=(mean_radians, 0),
             arrowprops=dict(arrowstyle="-|>", color=theme.colour("highlight"),
@@ -951,7 +1438,7 @@ def vectors(
         # Polar ``set_ylabel`` places the label through the western tick
         # labels.  Anchor it beyond the circular axes instead.
         ax.text(
-            -0.42, 0.5, radius_label, transform=ax.transAxes, rotation=90,
+            -0.24, 0.5, radius_label, transform=ax.transAxes, rotation=90,
             ha="center", va="center", color=theme.colour("ink"),
         )
     mean_period = mean_radians * period / (2 * np.pi) if np.isfinite(mean_radians) else np.nan
@@ -1053,6 +1540,86 @@ def surface(
     )
 
 
+def stacked_histogram(
+    figure: Any,
+    rect: tuple[float, float, float, float],
+    groups: Sequence[Sequence[float]],
+    theme: Any,
+    *,
+    labels: Sequence[str],
+    bins: int = 30,
+    look: Look | None = None,
+    overlap: float = 0.55,
+    labels_outside: bool = False,
+    limits: tuple[float, float] | None = None,
+    x_label: str = "",
+) -> PanelResult:
+    """Vertically stacked histograms for any collection of numeric groups.
+
+    This is the generic panel used by Rhythm Strength. It knows nothing about
+    rhythms: callers supply the groups, labels, bin count, colour, overlap,
+    displayed limits and axis wording. The overlapping form is also commonly
+    called a ridgeline plot.
+
+    ``labels_outside`` moves each row's name into the left margin instead of
+    sitting it on the row's own ridge. Inside is right for a handful of rows
+    whose mass is to the right; outside is the only readable option for many
+    rows, or for distributions that peak at their left edge, where an inside
+    label lands squarely on the tallest part of the curve it is naming.
+
+    ``limits`` fixes the range the bins cover instead of taking it from the
+    data. Every row shares one axis, so one heavy tail sets the range for all
+    of them and the other rows collapse into a spike at the middle - the shape
+    the panel exists to show is then the one thing it cannot show. Values
+    outside the range are left out of their histogram and counted in the
+    returned table under ``outside``, so the caller can say how many.
+    """
+    groups = [np.asarray(group, dtype=float) for group in groups]
+    if not groups:
+        return PanelResult(
+            data=pd.DataFrame(columns=["group", "bin_centre", "density"]), axes=[])
+    finite = np.concatenate([group[np.isfinite(group)] for group in groups])
+    if limits is not None:
+        low, high = (float(value) for value in limits)
+    elif finite.size:
+        low, high = float(finite.min()), float(finite.max())
+    else:
+        low, high = 0.0, 1.0
+    edges = np.linspace(low, high, int(bins) + 1)
+    centres = (edges[:-1] + edges[1:]) / 2
+    left, bottom, width, height = rect
+    each = height / (1 + (len(groups) - 1) * (1 - overlap))
+    step = each * (1 - overlap)
+    colour = (look or Look(colour=theme.colour("morphology"))).colour or theme.colour("morphology")
+    axes = []
+    drawn = []
+    for index, (group, label) in enumerate(zip(groups, labels)):
+        ax = figure.add_axes([left, bottom + (len(groups) - 1 - index) * step, width, each])
+        inside = group[np.isfinite(group)]
+        outside = int(((inside < low) | (inside > high)).sum())
+        counts, _ = np.histogram(inside, bins=edges, density=True)
+        drawn.append(pd.DataFrame({"group": str(label), "bin_centre": centres,
+                                   "density": counts, "outside": outside}))
+        ax.fill_between(centres, 0, counts, color=colour, alpha=0.65, linewidth=0)
+        ax.plot(centres, counts, color=colour, linewidth=theme.stroke("line"))
+        if labels_outside:
+            ax.text(-0.012, 0.15, str(label), transform=ax.transAxes,
+                    ha="right", va="bottom",
+                    fontsize=theme.size("annotation"), fontweight="bold")
+        else:
+            ax.text(0.0, 0.1, str(label), transform=ax.transAxes, ha="left", va="bottom",
+                    fontsize=theme.size("annotation"), fontweight="bold")
+        ax.set_yticks([])
+        if index != len(groups) - 1:
+            ax.tick_params(labelbottom=False)
+        else:
+            ax.set_xlabel(x_label)
+        for side in ("left", "right", "top"):
+            ax.spines[side].set_visible(False)
+        axes.append(ax)
+    return PanelResult(data=pd.concat(drawn, ignore_index=True), axes=axes)
+
+
 def ridgeline(
     figure: Any,
     rect: tuple[float, float, float, float],
@@ -1063,41 +1630,16 @@ def ridgeline(
     bins: int = 30,
     look: Look | None = None,
     overlap: float = 0.55,
+    labels_outside: bool = False,
+    limits: tuple[float, float] | None = None,
     x_label: str = "",
 ) -> PanelResult:
-    """Overlapping density-like histograms, one axes per group."""
-    groups = [np.asarray(group, dtype=float) for group in groups]
-    if not groups:
-        return PanelResult(
-            data=pd.DataFrame(columns=["group", "bin_centre", "density"]), axes=[])
-    finite = np.concatenate([group[np.isfinite(group)] for group in groups])
-    edges = np.linspace(float(finite.min()), float(finite.max()), int(bins) + 1) \
-        if finite.size else np.linspace(0, 1, int(bins) + 1)
-    centres = (edges[:-1] + edges[1:]) / 2
-    left, bottom, width, height = rect
-    each = height / (1 + (len(groups) - 1) * (1 - overlap))
-    step = each * (1 - overlap)
-    colour = (look or Look(colour=theme.colour("morphology"))).colour or theme.colour("morphology")
-    axes = []
-    drawn = []
-    for index, (group, label) in enumerate(zip(groups, labels)):
-        ax = figure.add_axes([left, bottom + (len(groups) - 1 - index) * step, width, each])
-        counts, _ = np.histogram(group[np.isfinite(group)], bins=edges, density=True)
-        drawn.append(pd.DataFrame({"group": str(label), "bin_centre": centres,
-                                   "density": counts}))
-        ax.fill_between(centres, 0, counts, color=colour, alpha=0.65, linewidth=0)
-        ax.plot(centres, counts, color=colour, linewidth=theme.stroke("line"))
-        ax.text(0.0, 0.1, str(label), transform=ax.transAxes, ha="left", va="bottom",
-                fontsize=theme.size("annotation"), fontweight="bold")
-        ax.set_yticks([])
-        if index != len(groups) - 1:
-            ax.tick_params(labelbottom=False)
-        else:
-            ax.set_xlabel(x_label)
-        for side in ("left", "right", "top"):
-            ax.spines[side].set_visible(False)
-        axes.append(ax)
-    return PanelResult(data=pd.concat(drawn, ignore_index=True), axes=axes)
+    """Compatibility name for :func:`stacked_histogram`."""
+    return stacked_histogram(
+        figure, rect, groups, theme, labels=labels, bins=bins, look=look,
+        overlap=overlap, labels_outside=labels_outside, limits=limits,
+        x_label=x_label,
+    )
 
 
 def stacked_area(
@@ -1304,6 +1846,157 @@ def paired_slopes(
     return PanelResult(data=drawn, axes=ax, extra={"segments": segments})
 
 
+def forest(
+    ax: Any,
+    effects: Sequence[float],
+    theme: Any,
+    *,
+    labels: Sequence[str],
+    lo: Sequence[float] | None = None,
+    hi: Sequence[float] | None = None,
+    significant: Sequence[bool] | None = None,
+    refusals: Sequence[str] | None = None,
+    no_effect: float = 0.0,
+    refusal_width: int = 64,
+    x_label: str = "",
+) -> PanelResult:
+    """One estimate per row, with its interval and a line at no effect.
+
+    Three things this draws that a plain dotplot does not, each because leaving
+    it out changes what the reader concludes:
+
+    A row whose ``refusals`` entry is a non-empty sentence carries that sentence
+    instead of a point. A refused comparison drawn as a blank row is
+    indistinguishable from a comparison nobody asked for, and the reason a
+    package writes a refusal row rather than skipping the contrast is that those
+    two are different.
+
+    A row with no interval - ``lo`` or ``hi`` missing, which is what a rank test
+    without a bootstrap gives - draws its point with no whisker. Drawing a
+    zero-width interval instead would claim the estimate was pinned exactly.
+
+    Significance is taken, not derived. The caller passes what the statistics
+    already decided, so the page cannot disagree with the file it came from.
+    """
+    effects = np.asarray(effects, dtype=float)
+    labels = list(labels)
+    rows = len(labels)
+    lo = np.full(rows, np.nan) if lo is None else np.asarray(lo, dtype=float)
+    hi = np.full(rows, np.nan) if hi is None else np.asarray(hi, dtype=float)
+    flags = ([False] * rows if significant is None
+             else [bool(value) for value in significant])
+    notes = [""] * rows if refusals is None else ["" if value is None else str(value)
+                                                 for value in refusals]
+
+    ax.axvline(no_effect, color=theme.colour("reference"),
+               linewidth=theme.stroke("guide"), zorder=1)
+    drawn = []
+    for row, label in enumerate(labels):
+        y = rows - 1 - row
+        if notes[row]:
+            # Wrapped, because a refusal is a whole sentence and the saved page
+            # is cropped tight: one unbroken line of it stretches the sheet to
+            # its own width and squeezes every panel into a corner.
+            ax.text(no_effect, y,
+                    "  " + NEWLINE.join(textwrap.wrap(notes[row], refusal_width)),
+                    va="center", ha="left", fontsize=theme.size("annotation"),
+                    color=theme.colour("caption"), zorder=3)
+            drawn.append({"label": label, "effect": np.nan, "lo": np.nan,
+                          "hi": np.nan, "significant": False,
+                          "refusal": notes[row], "drawn": False})
+            continue
+        colour = theme.colour("significant" if flags[row] else "not_significant")
+        if np.isfinite(lo[row]) and np.isfinite(hi[row]):
+            ax.plot([lo[row], hi[row]], [y, y], color=colour,
+                    linewidth=theme.stroke("emphasis"), solid_capstyle="butt",
+                    zorder=2)
+        ax.scatter(effects[row], y, color=colour, s=theme.point_area(1.4), zorder=3)
+        drawn.append({"label": label, "effect": float(effects[row]),
+                      "lo": float(lo[row]), "hi": float(hi[row]),
+                      "significant": flags[row], "refusal": "", "drawn": True})
+    ax.set_yticks(list(range(rows)))
+    ax.set_yticklabels(list(reversed(labels)))
+    ax.set_ylim(-0.6, rows - 0.4)
+    ax.set_xlabel(x_label)
+    return PanelResult(
+        data=pd.DataFrame(drawn, columns=["label", "effect", "lo", "hi",
+                                          "significant", "refusal", "drawn"]),
+        axes=ax)
+
+
+def forest_blocks(
+    figure: Any,
+    rect: tuple[float, float, float, float],
+    effects: Sequence[float],
+    theme: Any,
+    *,
+    labels: Sequence[str],
+    scales: Sequence[str],
+    lo: Sequence[float] | None = None,
+    hi: Sequence[float] | None = None,
+    significant: Sequence[bool] | None = None,
+    refusals: Sequence[str] | None = None,
+    no_effect: float = 0.0,
+    x_labels: dict | None = None,
+) -> PanelResult:
+    """A forest per scale, stacked, each with its own horizontal axis.
+
+    The reason this exists rather than one axes: a forest is read by comparing
+    distances to the no-effect line, and that only means something when every
+    row is in the same units. A difference of 6.75 pixels and a difference of
+    1300 camera units on one axis is not a comparison, it is two unrelated
+    numbers sharing a ruler - and the larger one flattens the smaller to a dot
+    on the line, which reads as "no effect" when it is nothing of the kind.
+
+    ``scales`` labels each row with the scale it belongs to. Blocks appear in
+    first-seen order and are given height in proportion to how many rows they
+    hold, so no block is squeezed for being small.
+
+    Rows are returned in one table with the scale on each, so the figure data
+    still says what the page showed and in what units.
+    """
+    scales = [str(value) for value in scales]
+    order = list(dict.fromkeys(scales))
+    counts = [sum(1 for value in scales if value == name) for name in order]
+    left, bottom, width, height = rect
+
+    # Each block takes its own rows plus a fixed allowance of paper underneath
+    # for its tick labels and axis title. Without the allowance a one-row block
+    # is a sliver whose axis label lands on the block below it, which is how a
+    # page ends up saying that two numbers share a scale when the whole point
+    # of splitting them was that they do not.
+    label_rows = 1.6
+    weights = [count + label_rows for count in counts]
+    total = sum(weights)
+
+    made, drawn = [], []
+    top = bottom + height
+    for name, count, weight in zip(order, counts, weights):
+        share = (weight / total) * height
+        drawing = share * count / weight
+        top -= share
+        ax = figure.add_axes([left, top + (share - drawing), width, drawing])
+        picked = [index for index, value in enumerate(scales) if value == name]
+        result = forest(
+            ax, [effects[i] for i in picked], theme,
+            labels=[labels[i] for i in picked],
+            lo=None if lo is None else [lo[i] for i in picked],
+            hi=None if hi is None else [hi[i] for i in picked],
+            significant=None if significant is None else [significant[i] for i in picked],
+            refusals=None if refusals is None else [refusals[i] for i in picked],
+            no_effect=no_effect,
+            x_label=(x_labels or {}).get(name, name))
+        table = result.data.copy()
+        table.insert(0, "scale", name)
+        drawn.append(table)
+        made.append(ax)
+    return PanelResult(data=pd.concat(drawn, ignore_index=True) if drawn
+                       else pd.DataFrame(columns=["scale", "label", "effect", "lo",
+                                                  "hi", "significant", "refusal",
+                                                  "drawn"]),
+                       axes=made)
+
+
 def event_average(
     ax: Any,
     offsets: Sequence[float],
@@ -1313,6 +2006,7 @@ def event_average(
     role: str = "morphology",
     bootstrap: int = 1000,
     null_curves: Any = None,
+    null_label: str = "Comparison interval",
     look: Look | None = None,
     x_label: str = "Frames from event",
     y_label: str = "",
@@ -1336,7 +2030,13 @@ def event_average(
     else:
         lo = hi = mean.copy()
     colour = (look or Look(colour=theme.colour(role))).colour or theme.colour(role)
-    result = pd.DataFrame({"offset": offsets, "mean": mean, "lo": lo, "hi": hi})
+    result = pd.DataFrame({
+        "offset": offsets,
+        "mean": mean,
+        "lo": lo,
+        "hi": hi,
+        "n_events": np.sum(np.isfinite(values), axis=0),
+    })
     if null_curves is not None:
         null = np.asarray(null_curves, dtype=float)
         if null.ndim == 1:
@@ -1344,10 +2044,11 @@ def event_average(
         null_mean = np.nanmean(null, axis=0)
         null_lo, null_hi = np.nanpercentile(null, [2.5, 97.5], axis=0)
         ax.fill_between(offsets, null_lo, null_hi, color=theme.colour("reference"),
-                        alpha=0.28, linewidth=0, label="Matched-noise interval")
+                        alpha=0.28, linewidth=0, label=null_label)
         result["null_mean"] = null_mean
         result["null_lo"] = null_lo
         result["null_hi"] = null_hi
+        result["null_n_events"] = np.sum(np.isfinite(null), axis=0)
     ax.fill_between(offsets, lo, hi, color=colour, alpha=0.25, linewidth=0)
     ax.plot(offsets, mean, color=colour, linewidth=theme.stroke("emphasis"),
             label=label or None)
@@ -1366,31 +2067,64 @@ def hexbin(
     gridsize: int = 24,
     cmap: Any = None,
     binned_mean: bool = True,
+    mean_label: str = "Mean within x bin",
     reference_band: Any = None,
+    xscale: str = "linear",
+    yscale: str = "linear",
     x_label: str = "",
     y_label: str = "",
 ) -> PanelResult:
-    """Point density for a crowded scatter, optionally with a binned mean."""
+    """Observation density for any paired measurements, with an optional mean.
+
+    ``xscale`` and ``yscale`` are passed to Matplotlib's hexagonal binning, so
+    logarithmic axes are binned in logarithmic space instead of drawing linear
+    bins and distorting them afterwards. The returned table is the optional
+    mean of y in each x bin; the caller should retain the paired observations as
+    its figure-data table because those are the inputs to the density counts.
+    """
+    if xscale not in ("linear", "log") or yscale not in ("linear", "log"):
+        raise ValueError("hexbin scales must be 'linear' or 'log'")
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     usable = np.isfinite(x) & np.isfinite(y)
+    if xscale == "log":
+        usable &= x > 0
+    if yscale == "log":
+        usable &= y > 0
     x, y = x[usable], y[usable]
     handle = ax.hexbin(x, y, gridsize=int(gridsize), mincnt=1,
-                       cmap=theme["sequential_cmap"] if cmap is None else cmap)
-    table = pd.DataFrame(columns=["x", "mean", "count"])
+                       cmap=theme["sequential_cmap"] if cmap is None else cmap,
+                       xscale=xscale, yscale=yscale)
+    table = pd.DataFrame(
+        columns=["bin_left", "bin_right", "x", "mean", "count"])
     if binned_mean and x.size:
-        edges = np.linspace(float(x.min()), float(x.max()), int(gridsize) + 1)
+        low, high = float(x.min()), float(x.max())
+        if low == high:
+            edges = np.asarray([low * 0.95, high * 1.05]) if low else np.asarray([-0.5, 0.5])
+        elif xscale == "log":
+            edges = np.geomspace(low, high, int(gridsize) + 1)
+        else:
+            edges = np.linspace(low, high, int(gridsize) + 1)
         which = np.clip(np.digitize(x, edges) - 1, 0, len(edges) - 2)
         rows = []
         for index in range(len(edges) - 1):
             selected = y[which == index]
             if selected.size:
-                rows.append({"x": (edges[index] + edges[index + 1]) / 2,
-                             "mean": float(np.mean(selected)), "count": int(len(selected))})
+                centre = (np.sqrt(edges[index] * edges[index + 1])
+                          if xscale == "log"
+                          else (edges[index] + edges[index + 1]) / 2)
+                rows.append({
+                    "bin_left": float(edges[index]),
+                    "bin_right": float(edges[index + 1]),
+                    "x": float(centre),
+                    "mean": float(np.mean(selected)),
+                    "count": int(len(selected)),
+                })
         table = pd.DataFrame(rows)
         if not table.empty:
             ax.plot(table["x"], table["mean"], color=theme.colour("ink"),
-                    linewidth=theme.stroke("emphasis"))
+                    linewidth=theme.stroke("emphasis"),
+                    label=mean_label or None)
     if reference_band is not None:
         band = np.asarray(reference_band, dtype=float)
         if band.ndim == 1 and len(band) == 2:

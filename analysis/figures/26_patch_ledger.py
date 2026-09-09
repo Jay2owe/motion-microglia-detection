@@ -1,26 +1,31 @@
 """Figure 26: per-cell territory coverage and pixel revisits.
 
 How much of the ground a cell eventually covers it has reached by a given time,
-and how often it comes back to the same pixel. The denominator is each cell's
-own final territory, not the field, so a small cell is not penalised.
+how often it comes back to the same pixel, and whether territory is revealed
+differently from repeated frame-order permutations. The denominator is each
+cell's own final territory, not the field, so a small cell is not penalised.
 
     python analysis/figures/26_patch_ledger.py <run>
-    ... --contour 0.25           the persistent-core contour
+    ... --contour 0.25           the occupancy-frequency contour
     ... --cells 24               how many territories are drawn
+    ... --shuffles 5000          frame-order permutation count
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1]))
+sys.path.insert(0, str(HERE))
 
-from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import tifffile
 
-from _derive import _require_columns, _scaled_field, _selected_identities
+from analysis.modules.territory import coverage_order_permutation_test
+
+from _derive import _require_columns, _selected_identities
 from _metrics import semantic_label
-from _schema import FigureContext, FigureResult, Input, Option, Panel, Stack, Table, figure, run_figure
+from _schema import FigureContext, FigureResult, Input, Option, Panel, Table, figure, run_figure
 
 from panels import common
 from panels import territory as territory_panels
@@ -48,13 +53,13 @@ def _territory_columns(summary: pd.DataFrame) -> pd.DataFrame:
     title="Per-cell territory coverage and pixel revisits",
     reads=(Table("cell_summary.csv", module="territory"),
            Table("cell_frame.csv", module="territory"),
-           Stack("revisit_count.tif", module="territory"),
            Input("labels")),
     panels=(
-        Panel("revisit", territory_panels.revisit_map,
-              title="How often each pixel was occupied"),
+        Panel("revisit", territory_panels.revisit_grid, block=True,
+              item_width_inches=2.5, item_height_inches=2.5,
+              title="Per-cell occupancy frequency maps"),
         Panel("coverage", territory_panels.coverage_curve,
-              title="Fraction of eventual territory reached"),
+              title="Cumulative territory coverage: observed versus permuted frame order"),
         Panel("core", common.histogram,
               title="Frequently occupied share of territory"),
     ),
@@ -65,6 +70,7 @@ def _territory_columns(summary: pd.DataFrame) -> pd.DataFrame:
         Option("bins", default=20),
         Option("cells", default="16", cast=str),
         Option("hour_ticks", default=24.0),
+        Option("shuffles", default=1000),
     ),
     grammar="revisit map coverage curves and core histogram",
 )
@@ -88,79 +94,72 @@ def build(ctx: FigureContext) -> FigureResult:
                                "union_px", "coverage_share", "new_px", "revisit_fraction"]]
     panels = ctx.panels()
     label_path = ctx.input_path("labels") if "revisit" in panels or "coverage" in panels else None
+    if ("revisit" in panels or "coverage" in panels) and label_path is None:
+        raise SystemExit("Patch Ledger needs the labelled-cell stack for occupancy maps and the frame-order test")
     labels = tifffile.imread(label_path) if label_path else None
     cell_frame = frame if "revisit" in panels else pd.DataFrame()
-    fig, axes = ctx.layout(panels)
+    shown = cells
+    columns = min(8, max(1, len(shown)))
+    revisit_panel = ctx.spec.panel("revisit")
+    minimum_sizes = ({"revisit": revisit_panel.grid_minimum(len(shown), columns)}
+                     if "revisit" in panels else None)
+    fig, axes = ctx.layout(panels, minimum_sizes=minimum_sizes)
+    occupancy = ({identity: labels == int(identity) for identity in cells}
+                 if labels is not None else {})
+    test_units = pd.DataFrame()
+    test_curves = pd.DataFrame()
+    test_summary: dict = {}
+    if "coverage" in axes:
+        test_units, test_curves, test_summary = coverage_order_permutation_test(
+            occupancy, shuffles=int(ctx.option("shuffles")), random_state=20260825,
+        )
     if "revisit" in axes:
         rect = tuple(axes["revisit"].get_position().bounds)
         axes["revisit"].remove()
-        shown = cells[:16]
-        columns = min(8, max(1, len(shown)))
-        rows = int(np.ceil(len(shown) / columns))
-        gap = 0.012
-        width = (rect[2] - gap * (columns - 1)) / columns
-        height = (rect[3] - gap * (rows - 1)) / rows
-        map_axes, map_handles = [], []
+        scale = ctx.theme.canvas_scale
+        gap_x = revisit_panel.item_gap_inches * scale / fig.get_figwidth()
+        gap_y = revisit_panel.item_gap_inches * scale / fig.get_figheight()
         contour_fraction = float(ctx.option("contour"))
         soma = cell_frame.groupby("identity")[["soma_x", "soma_y"]].median() if not cell_frame.empty else pd.DataFrame()
-        aggregate = ctx.stack("revisit_count.tif")
-        count_maps = {
-            identity: (np.count_nonzero(labels == identity, axis=0) if labels is not None else aggregate)
-            for identity in shown
+        count_maps = {identity: np.count_nonzero(occupancy[identity], axis=0)
+                      for identity in shown}
+        observed_frames = {
+            int(identity): int(value)
+            for identity, value in territory.set_index("identity")["observed_frames"].items()
         }
-        shared_vmax = max(float(np.nanmax(values)) for values in count_maps.values()) if count_maps else 1.0
-        for position, identity in enumerate(shown):
-            row, column = divmod(position, columns)
-            ax = fig.add_axes([rect[0] + column * (width + gap),
-                               rect[1] + (rows - 1 - row) * (height + gap), width, height])
-            counts = count_maps[identity]
-            observed = int(territory.set_index("identity").loc[identity, "observed_frames"])
-            centre = None
-            if identity in soma.index:
-                centre = (ctx.scale.length(float(soma.loc[identity, "soma_x"])),
-                          ctx.scale.length(float(soma.loc[identity, "soma_y"])))
-            map_handle = territory_panels.revisit_map(
-                ax, counts, ctx.theme, field=_scaled_field(ctx),
-                contour_at=contour_fraction * observed, soma=centre,
-                x_label="", y_label="", vmin=0, vmax=shared_vmax,
-            ).extra["handle"]
-            ax.set_xticks([]); ax.set_yticks([])
-            ax.text(0.03, 0.97, str(identity), transform=ax.transAxes, va="top",
-                    fontsize=ctx.theme.size("caption"), color=ctx.theme.colour("ink"),
-                    bbox={"facecolor": "white", "alpha": 0.72, "edgecolor": "none", "pad": 1.0})
-            map_axes.append(ax); map_handles.append(map_handle)
-        axes["revisit"] = map_axes[0] if map_axes else fig.add_axes(rect)
-        if map_axes:
-            fig.text(rect[0], rect[1] + rect[3] + 0.014, ctx.spec.panel("revisit").heading(),
-                     fontsize=ctx.theme.size("panel"), fontweight="bold", va="bottom")
-            common.inset_colour_bar(map_axes[-1], map_handles[-1], ctx.theme,
-                                    label="Frames occupied")
-            fig.legend(
-                handles=[
-                    Line2D([], [], color=ctx.theme.colour("ink"), label="Persistent-core contour"),
-                    Line2D([], [], marker="+", color=ctx.theme.colour("highlight"),
-                           linestyle="none", label="Median soma position"),
-                ], loc="upper center", bbox_to_anchor=(0.55, rect[1] - 0.012),
-                ncol=2, frameon=False, fontsize=ctx.theme.size("caption"),
-            )
+        soma_locations = {
+            int(identity): (float(soma.loc[identity, "soma_x"]),
+                            float(soma.loc[identity, "soma_y"]))
+            for identity in shown if identity in soma.index
+        }
+        revisit_result = territory_panels.revisit_grid(
+            fig, rect, count_maps, ctx.theme,
+            observed_frames=observed_frames, soma=soma_locations,
+            contour_fraction=contour_fraction, max_columns=columns,
+            gap_x=gap_x, gap_y=gap_y,
+            heading=ctx.spec.panel("revisit").heading(),
+        )
+        ctx.drew("revisit", revisit_result)
+        axes["revisit"] = revisit_result.axes[0]
     if "coverage" in axes:
-        selected = frame[frame["identity"].isin(cells)]
-        pivot = selected.pivot(index="identity", columns="hours", values="cumulative_unique_px")
-        union = territory.set_index("identity")["union_px"].reindex(pivot.index)
-        shuffled = None
-        if labels is not None and len(pivot.columns):
-            generator = np.random.default_rng(20260825)
-            order = generator.permutation(labels.shape[0])
-            curves = []
-            for identity in pivot.index:
-                masks = labels == int(identity)
-                curves.append(np.logical_or.accumulate(masks[order], axis=0).sum(axis=(1, 2)) /
-                              max(int(masks.any(axis=0).sum()), 1))
-            shuffled = np.asarray(curves, dtype=float)
-        territory_panels.coverage_curve(axes["coverage"], pivot.columns,
-                                         pivot.to_numpy(float), ctx.theme,
-                                         denominator=union.to_numpy(float), shuffled=shuffled,
-                                         hour_ticks=ctx.hour_ticks)
+        hours = (frame.groupby("frame_index")["hours"].first()
+                 .reindex(np.arange(labels.shape[0])).interpolate(limit_direction="both"))
+        pivot = test_curves.pivot(
+            index="unit", columns="frame_index", values="observed_coverage_fraction"
+        ).reindex(cells)
+        population = test_curves.drop_duplicates("frame_index").sort_values("frame_index")
+        ctx.drew(
+            "coverage",
+            territory_panels.coverage_curve(
+                axes["coverage"], hours.to_numpy(float), pivot.to_numpy(float), ctx.theme,
+                denominator=np.ones(len(pivot)),
+                permutation_median=population["permutation_median"].to_numpy(float),
+                permutation_lo=population["permutation_lo"].to_numpy(float),
+                permutation_hi=population["permutation_hi"].to_numpy(float),
+                test_p_value=float(test_summary["p_value"]),
+                shuffles=int(test_summary["shuffles"]), hour_ticks=ctx.hour_ticks,
+            ),
+        )
     if "core" in axes:
         metric = ctx.option("metrics")
         if metric not in territory:
@@ -171,12 +170,30 @@ def build(ctx: FigureContext) -> FigureResult:
         common.histogram(axes["core"], territory[metric], ctx.theme,
                          bins=int(ctx.option("bins")), role="stable",
                          x_label=semantic_label(metric), y_label="Cells")
+    subtitle = f"{len(cells)} cells shown; coverage denominator is each cell's own final territory."
+    if test_summary:
+        subtitle += (
+            f" Observed median coverage area {test_summary['observed_median_auc']:.3f} "
+            f"versus permutation median {test_summary['permutation_median_auc']:.3f}; "
+            f"p = {test_summary['p_value']:.3g}."
+        )
+    auxiliary = {"territory_summary.csv": territory}
+    if test_summary:
+        auxiliary.update({
+            "coverage_order_test.csv": test_units,
+            "coverage_order_curves.csv": test_curves,
+            "statistics.csv": pd.DataFrame([test_summary]),
+        })
     return FigureResult(
         figure=fig,
         axes=list(axes.values()),
         figure_data=figure_data,
-        subtitle=f"Coverage denominator is each identity's own final union; {len(territory)} territories.",
-        auxiliary={"territory_summary.csv": territory},
+        subtitle=subtitle,
+        footnote=ctx.footnote(
+            "Top: each tile is one cell; hue is the fraction of that cell's observed frames in which each pixel was occupied. All tiles use one spatial scale; black is the configured occupancy-frequency contour and the plus is median soma position.",
+            "The null repeatedly reorders each cell's observed footprints among the same frames when it was present, preserving footprints and gaps while removing temporal order. The two-sided test compares the median per-cell area under the cumulative coverage curve; lower values mean territory was revealed later.",
+        ),
+        auxiliary=auxiliary,
     )
 
 

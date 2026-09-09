@@ -23,8 +23,10 @@ Three places, most specific first:
 
 3. **The builder's default**, which describes and does not conclude.
 
-Setting a slot to ``""`` removes that text from the figure entirely; leaving the
-slot out keeps the default. ``null`` reads the same as ``""``.
+Builder-generated subtitles, footnotes and notes are retained in the bundle's
+audit text but are not drawn on the canvas by default. Supply one of those
+slots through the configuration or a command-line flag to draw it deliberately.
+Setting a slot to ``""`` removes it entirely; ``null`` reads the same as ``""``.
 
 A figure's *options* - what it draws rather than what is written beside it -
 resolve the same three ways and live in an ``options`` sub-block of the same
@@ -55,13 +57,24 @@ from typing import Any
 
 from analysis.theme import sentence_case
 
-from _options import OPTIONS, SWITCHES, skip_tokens
+from _options import OPTIONS, SELECTION, SWITCHES, skip_tokens
 
-__all__ = ["FigureText", "OPTIONS_KEY", "figure_text", "SLOTS"]
+__all__ = ["FigureText", "OPTIONS_KEY", "PLAN_KEY", "figure_text",
+           "item_settings", "plan_items", "SLOTS"]
+
+#: Where a run records the plan it was asked to draw, expanded into one entry
+#: per figure. Written by ``analysis.run`` into ``figures.json`` beside the
+#: per-figure blocks; see :mod:`analysis.plots`.
+PLAN_KEY = "plots"
 
 #: The text a builder can be given. Anything else in a ``figures`` block is a
 #: typo, and is reported rather than ignored.
 SLOTS: tuple[str, ...] = ("title", "subtitle", "footnote", "note", "claim")
+
+#: Explanatory prose belongs in the audit bundle unless somebody deliberately
+#: asks to put it on the canvas. Titles remain visible by default; claims were
+#: never canvas text.
+DETAIL_SLOTS: tuple[str, ...] = ("subtitle", "footnote", "note")
 
 #: The one nested key a ``figures.<slug>`` block may carry beside the slots.
 #: Everything else at that level is wording, which keeps the existing shape
@@ -95,6 +108,21 @@ class FigureText:
             **{slot: getattr(self, slot) for slot in SLOTS},
             "source": dict(self.source or {}),
         }
+
+    def on_canvas(self) -> "FigureText":
+        """Return the wording deliberately selected for the visible figure.
+
+        Builder defaults still travel with the bundle and remain available to
+        the README. Only a flag or configuration entry promotes explanatory
+        text onto the canvas, keeping the project-wide visual default to the
+        title, axis labels and plot-native statistical annotations.
+        """
+        origin = self.source or {}
+        values = {slot: getattr(self, slot) for slot in SLOTS}
+        for slot in DETAIL_SLOTS:
+            if origin.get(slot, "default") == "default":
+                values[slot] = ""
+        return FigureText(slug=self.slug, source=dict(origin), **values)
 
 
 def _from_command_line(argv: list[str]) -> dict[str, str]:
@@ -134,8 +162,68 @@ def _from_command_line(argv: list[str]) -> dict[str, str]:
     return found
 
 
-def _from_run(run: Path, slug: str) -> tuple[dict[str, str], dict[str, Any]]:
-    """The wording and the options a run recorded for one figure.
+def plan_items(run: Path) -> list[dict]:
+    """The expanded plot plan this run carries, in the order it was written.
+
+    Two places, and the second wins. ``figures.json`` holds the plan the run was
+    measured with, which is the record. ``figures/plan.json`` holds the plan a
+    ``python -m analysis plots --plan <file>`` invocation drew instead, written
+    beside the bundles it produced so that a bundle the run's own configuration
+    does not mention still says where it came from.
+    """
+    found: list[dict] = []
+    for stored in (Path(run) / "figures.json", Path(run) / "figures" / "plan.json"):
+        if not stored.exists():
+            continue
+        data = json.loads(stored.read_text(encoding="utf-8"))
+        entries = data.get(PLAN_KEY) or []
+        if isinstance(entries, list):
+            found = [entry for entry in entries if isinstance(entry, dict)] or found
+    return found
+
+
+def item_settings(run: Path, slug: str, item: str) -> dict[str, Any]:
+    """One item of the run's plan, refusing a name the run does not have.
+
+    The message lists the items the run *does* have, because this is the one a
+    user meets most often while learning the feature: an item name is long, it
+    is typed from a manifest, and a plan of forty is not something anybody
+    remembers.
+    """
+    entries = plan_items(run)
+    for entry in entries:
+        if str(entry.get("name")) != item:
+            continue
+        figure = str(entry.get("figure", slug))
+        if figure != slug:
+            raise SystemExit(
+                f"--item {item!r} is an item of {figure}, not of {slug}. An "
+                "item names its own figure, so drawing it with another one "
+                "would put one page's settings on a different page."
+            )
+        return dict(entry.get("options") or {})
+    known = "\n  ".join(str(entry.get("name")) for entry in entries)
+    raise SystemExit(
+        f"--item {item!r} is not in this run's plot plan.\n"
+        + (f"This run draws:\n  {known}" if known else
+           "This run has no plot plan; add a `plots` block to the analysis "
+           "configuration, or pass --plan to `python -m analysis plots`.")
+    )
+
+
+def _item_text(run: Path, slug: str, item: str) -> dict[str, str]:
+    """The wording one item of the plan carries, if it carries any."""
+    for entry in plan_items(run):
+        if str(entry.get("name")) == item and str(entry.get("figure", slug)) == slug:
+            block = entry.get("text") or {}
+            return {key: "" if value is None else str(value)
+                    for key, value in block.items() if key in SLOTS}
+    return {}
+
+
+def _from_run(run: Path, slug: str,
+              item: str | None = None) -> tuple[dict[str, str], dict[str, Any]]:
+    """The wording and the options a run recorded for one drawing of a figure.
 
     Two dicts rather than one because the two resolve against different
     vocabularies: a text slot is one of five names this module owns, an option
@@ -143,11 +231,24 @@ def _from_run(run: Path, slug: str) -> tuple[dict[str, str], dict[str, Any]]:
     what lets a typo in either half still be refused by name - this function
     keeps refusing ``titel``, and ``_schema`` refuses ``bin`` against the
     figure that would have honoured ``bins``.
+
+    Three layers, innermost last: the builder's own defaults (which this
+    function never sees), the ``figures.<slug>`` block, and - when an item of
+    the run's plot plan is named - that item's own settings. A plan may draw one
+    figure many ways, so the per-slug block is what every drawing of it shares
+    and the item is what makes this drawing different.
+
+    An item's ``stem``, ``panels`` and ``item`` are held back. They say which
+    figure is being drawn rather than what it draws, are read before a context
+    exists, and no figure declares them - so letting them through here would
+    have ``_schema`` refuse the plan's own settings as options this figure does
+    not accept.
     """
     stored = Path(run) / "figures.json"
-    if not stored.exists():
+    if not stored.exists() and item is None:
         return {}, {}
-    data = json.loads(stored.read_text(encoding="utf-8"))
+    data = (json.loads(stored.read_text(encoding="utf-8"))
+            if stored.exists() else {})
     block = dict(data.get("figures", data).get(slug) or {})
     options = block.pop(OPTIONS_KEY, {}) or {}
     if not isinstance(options, dict):
@@ -165,14 +266,26 @@ def _from_run(run: Path, slug: str) -> tuple[dict[str, str], dict[str, Any]]:
     # a user takes a line off a figure. Only an absent key falls back to the
     # builder's default, so omit the slot rather than emptying it to keep one.
     text = {key: "" if value is None else str(value) for key, value in block.items()}
+    if item is not None:
+        options = {**options, **{
+            name: value
+            for name, value in item_settings(run, slug, item).items()
+            if name not in SELECTION
+        }}
+        text = {**text, **_item_text(run, slug, item)}
     return text, dict(options)
 
 
-def figure_text(run: Path, slug: str, argv: list[str] | None = None, **defaults: str) -> FigureText:
+def figure_text(run: Path, slug: str, argv: list[str] | None = None,
+                item: str | None = None, **defaults: str) -> FigureText:
     """The wording for one figure: flag, then configuration, then the default.
 
     Defaults are the builder's own and should describe the axes rather than
     interpret them. Nothing here inspects the data.
+
+    When an item of the run's plot plan is named, its wording sits between the
+    flag and the ``figures`` block: a plan that draws one figure six ways can
+    put a different footnote on each of them without six configuration blocks.
     """
     unknown = set(defaults) - set(SLOTS)
     if unknown:
@@ -182,7 +295,7 @@ def figure_text(run: Path, slug: str, argv: list[str] | None = None, **defaults:
         )
 
     flags = _from_command_line(list(sys.argv[1:] if argv is None else argv))
-    configured, _ = _from_run(Path(run), slug)
+    configured, _ = _from_run(Path(run), slug, item)
 
     resolved: dict[str, str] = {}
     source: dict[str, str] = {}

@@ -148,7 +148,7 @@ def discover(scored: pd.DataFrame, frame_count: int,
                 discovery_status="eligible" if not reasons else "rejected",
                 discovery_reason="eligible" if not reasons else "|".join(reasons),
             )))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=list(Proposal.__dataclass_fields__))
 
 
 def recover(labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,

@@ -55,7 +55,7 @@ def build(ctx: FigureContext) -> FigureResult:
             )
         table = null.set_index("metric").loc[wanted[::-1]].reset_index()
     else:
-        table = null.sort_values("excess_over_null_both").reset_index(drop=True)
+        table = null.sort_values("excess_over_null_primary").reset_index(drop=True)
 
     table["label"] = table["metric"].map(lambda column: describe(column).label)
     table["phase_rayleigh_p"] = table["metric"].map(phase["rayleigh_p_value"])
@@ -88,9 +88,9 @@ def build(ctx: FigureContext) -> FigureResult:
 
     rhythm_panels.noise_floor(
         ax,
-        table["observed_rate_both"], table["false_positive_rate_both"], ctx.theme,
+        table["observed_rate_primary"], table["false_positive_rate_primary"], ctx.theme,
         labels=table["label"],
-        excess=table["excess_over_null_both"],
+        excess=table["excess_over_null_primary"],
         surrogate_label=f"drift-matched noise ({per_cell} surrogates per cell)",
     )
     ax.set_xlim(0, 0.44)
@@ -103,8 +103,8 @@ def build(ctx: FigureContext) -> FigureResult:
         axes=[ax],
         figure_data=table,
         subtitle=(
-            f"{ctx.summary['stem']}, {cells_tested} cells tested. A cosinor and a "
-            f"Lomb-Scargle test both at p < 0.05, run on the real trace and on\n"
+            f"{ctx.summary['stem']}, {cells_tested} cells tested. The configured "
+            f"{table['primary_method'].iloc[0]} test, run on the real trace and on\n"
             f"{surrogates} surrogates with the same drift and smoothness but no rhythm "
             f"({null_model})."
         ),
@@ -115,23 +115,23 @@ def build(ctx: FigureContext) -> FigureResult:
         ),
         readme="""## What the figure shows
 
-Two dots per measurement. The hollow dot is how often the pair of tests fires
+Two dots per measurement. The hollow dot is how often the primary test fires
 on surrogate traces built to have that measurement's own drift and smoothness
 but no rhythm; the filled dot is how often it fires on the real cells.
 
 ## Why the surrogates are there
 
-A cosinor fit on a recording this short fires more often than its p-value
-suggests, because a slowly drifting, smooth trace resembles the first half of a
-cosine. The surrogates measure how often that happens for each measurement.
+A rhythm test on a short, smooth recording can fire more often than its nominal
+p-value suggests. The surrogates measure how often that happens for each
+measurement under the configured primary method.
 
 ## Choosing the rows
 
 `--metrics` takes any measurements `rhythms_null.csv` holds, in the order you
 want them read. Left alone the rows are sorted by how far the real rate clears
 the surrogate one.""",
-        console=table[["metric", "observed_rate_both", "false_positive_rate_both",
-                       "excess_over_null_both"]].round(3).to_string(index=False),
+        console=table[["metric", "observed_rate_primary", "false_positive_rate_primary",
+                       "excess_over_null_primary"]].round(3).to_string(index=False),
     )
 
 

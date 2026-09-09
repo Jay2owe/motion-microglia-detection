@@ -275,7 +275,7 @@ def discover(scored: pd.DataFrame, labels: np.ndarray, raw: np.ndarray,
                 discovery_reason=("eligible" if not reasons
                                   else "|".join(reasons)),
             )))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=list(Proposal.__dataclass_fields__))
 
 
 def _component_excess(frame: np.ndarray, identity: int) -> int:

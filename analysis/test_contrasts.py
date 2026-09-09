@@ -18,9 +18,10 @@ import pytest
 from scipy import stats
 
 from analysis.config import AnalysisConfig, ContrastConfig, _contrasts
-from analysis.contrasts import (CORRECTIONS, MIN_UNITS, PAIRED_TESTS, TESTS,
-                                _benjamini_hochberg, _bonferroni, _sidak,
-                                hedges_g, paired_hedges_g, run_contrasts, to_units)
+from analysis.contrasts import (CORRECTIONS, MIN_UNITS, PAIRED_TESTS,
+                                SINGLE_GROUP_TESTS, TESTS, _benjamini_hochberg,
+                                _bonferroni, _sidak, hedges_g, paired_hedges_g,
+                                run_contrasts, to_units)
 from analysis.pool import MEASURED_FOLDER, POOLED_FOLDER
 
 TEST_NAMES = tuple(TESTS)
@@ -28,13 +29,15 @@ CORRECTION_NAMES = tuple(CORRECTIONS)
 
 
 def _contrast(**kwargs) -> ContrastConfig:
+    groups = kwargs.pop("metric_groups", {})
     block = {
         "name": "c", "table": "cell_summary", "metrics": ["area_px_median"],
         "group_by": "condition", "groups": ["control", "treated"],
         "unit": "cell", "test": "mannwhitney",
     }
     block.update(kwargs)
-    return ContrastConfig.from_dict(block, TEST_NAMES, PAIRED_TESTS, CORRECTION_NAMES)
+    return ContrastConfig.from_dict(block, TEST_NAMES, PAIRED_TESTS,
+                                    CORRECTION_NAMES, SINGLE_GROUP_TESTS, groups)
 
 
 def _pooled(tmp_path, table: pd.DataFrame, name: str = "cell_summary",
@@ -177,6 +180,12 @@ def test_every_result_carries_an_effect_size(tmp_path):
             contrast = _contrast(test=test, table="cell_summary_windowed",
                                  group_by="window", groups=["baseline", "treatment"])
             run = paired
+        elif spec["groups"] == 1:
+            # One group against zero: the values must sit away from zero for
+            # there to be an effect at all, so the treated block is the one to
+            # hand it.
+            contrast = _contrast(test=test, groups=["treated"])
+            run = unpaired
         else:
             contrast = _contrast(test=test, groups=["control", "treated"])
             run = unpaired
@@ -567,7 +576,8 @@ def test_a_contrast_that_cannot_be_read_is_refused(block, message):
             "test": "mannwhitney"}
     base.update(block)
     with pytest.raises(ValueError, match=message):
-        ContrastConfig.from_dict(base, TEST_NAMES, PAIRED_TESTS, CORRECTION_NAMES)
+        ContrastConfig.from_dict(base, TEST_NAMES, PAIRED_TESTS,
+                                     CORRECTION_NAMES, SINGLE_GROUP_TESTS, {})
 
 
 @pytest.mark.parametrize("key", ["table", "metrics", "group_by", "groups", "unit", "test"])
@@ -577,7 +587,8 @@ def test_every_required_setting_is_required(key):
             "test": "mannwhitney"}
     base.pop(key)
     with pytest.raises(ValueError, match="does not say"):
-        ContrastConfig.from_dict(base, TEST_NAMES, PAIRED_TESTS, CORRECTION_NAMES)
+        ContrastConfig.from_dict(base, TEST_NAMES, PAIRED_TESTS,
+                                     CORRECTION_NAMES, SINGLE_GROUP_TESTS, {})
 
 
 def test_two_contrasts_in_one_family_may_not_disagree_about_the_correction():
@@ -594,19 +605,19 @@ def test_two_contrasts_in_one_family_may_not_disagree_about_the_correction():
          "family": "primary", "correction": "benjamini_hochberg"},
     ]
     with pytest.raises(ValueError, match="one correction and one alpha"):
-        _contrasts(blocks)
+        _contrasts(blocks, {})
 
 
 def test_two_contrasts_with_one_name_are_refused():
     block = {"name": "a", "table": "t", "metrics": ["m"], "group_by": "condition",
              "groups": ["x", "y"], "unit": "cell", "test": "mannwhitney"}
     with pytest.raises(ValueError, match="declared twice"):
-        _contrasts([block, dict(block)])
+        _contrasts([block, dict(block)], {})
 
 
 def test_no_contrasts_parses_to_nothing_and_writes_nothing():
-    assert _contrasts(None) == []
-    assert _contrasts([]) == []
+    assert _contrasts(None, {}) == []
+    assert _contrasts([], {}) == []
 
 
 def test_the_written_columns_are_what_plot_that_asks_for(tmp_path):
@@ -637,13 +648,13 @@ def test_hedges_g_agrees_with_circadian_workbench():
     Skipped rather than failed when the workbench is absent, so this is a check
     and not a dependency.
     """
-    workbench = pytest.importorskip("circadian_workbench.analysis")
+    workbench = pytest.importorskip("circadian_workbench").statistics
 
     for x, y in (([1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 4.0, 9.0]),
                  ([10.0, 10.5, 11.0], [10.2, 10.4, 10.6]),
                  ([1.0, 1.0, 1.0], [1.0, 1.0, 1.0])):
         ours = hedges_g(x, y)
-        theirs = workbench._hedges_g(x, y)
+        theirs = workbench.hedges_g(x, y)
         if np.isnan(theirs):
             assert np.isnan(ours)
         else:
@@ -651,14 +662,14 @@ def test_hedges_g_agrees_with_circadian_workbench():
 
 
 def test_bonferroni_and_sidak_agree_with_circadian_workbench():
-    workbench = pytest.importorskip("circadian_workbench.analysis")
+    workbench = pytest.importorskip("circadian_workbench").statistics
 
     values = np.array([0.001, 0.02, np.nan, 0.4, 0.9])
     assert np.allclose(_bonferroni(values),
-                       workbench._apply_pointwise_correction(values, "bonferroni"),
+                       workbench.adjust_pvalues(values, "bonferroni"),
                        rtol=0, atol=0, equal_nan=True)
     assert np.allclose(_sidak(values),
-                       workbench._apply_pointwise_correction(values, "sidak"),
+                       workbench.adjust_pvalues(values, "sidak"),
                        rtol=0, atol=0, equal_nan=True)
 
 
@@ -680,3 +691,162 @@ def test_a_paired_effect_is_standardised_by_the_spread_of_the_differences():
     assert paired_hedges_g(differences) == pytest.approx(correction * expected_d)
     assert np.isnan(paired_hedges_g([1.0]))
     assert np.isnan(paired_hedges_g([2.0, 2.0, 2.0]))
+
+
+# ------------------------------------------- one group, against zero not a group
+
+
+def test_a_one_group_test_compares_against_zero(tmp_path):
+    """The shape of question a single-group table supports, and the only one.
+
+    A slope, a change and a difference all have a meaningful zero. Asking
+    whether a set of them sits away from it is a real comparison; asking a
+    two-group test the same question means inventing a second group.
+    """
+    run = _pooled(tmp_path, _rows({"treated": [0.4, 0.5, 0.6, 0.7, 0.9, 1.1]}))
+    row = run_contrasts(run, _config(_contrast(test="signed_rank",
+                                               groups=["treated"])),
+                        resamples=200).iloc[0]
+
+    assert row["note"] == ""
+    assert float(row["p_value"]) < 0.05
+    assert row["effect_kind"] == "median_against_zero"
+    assert float(row["effect"]) == pytest.approx(0.65)
+    assert float(row["statistic"]) == pytest.approx(
+        stats.wilcoxon([0.4, 0.5, 0.6, 0.7, 0.9, 1.1]).statistic)
+
+
+def test_a_one_group_result_names_one_group_and_leaves_the_other_blank(tmp_path):
+    """There is no second group, and a blank says so where a name would lie."""
+    run = _pooled(tmp_path, _rows({"treated": [0.4, 0.5, 0.6, 0.7, 0.9, 1.1]}))
+    row = run_contrasts(run, _config(_contrast(test="signed_rank",
+                                               groups=["treated"])),
+                        resamples=40).iloc[0]
+
+    assert row["group_a"] == "treated"
+    assert row["group_b"] == ""
+    assert int(row["n_a"]) == 6
+    assert row["n_b"] == ""
+    assert int(row["n_groups"]) == 1
+
+
+def test_a_one_group_effect_carries_a_resampled_interval(tmp_path):
+    run = _pooled(tmp_path, _rows({"treated": [0.4, 0.5, 0.6, 0.7, 0.9, 1.1]}))
+    row = run_contrasts(run, _config(_contrast(test="signed_rank",
+                                               groups=["treated"])),
+                        resamples=400).iloc[0]
+    assert float(row["effect_lo"]) <= float(row["effect"]) <= float(row["effect_hi"])
+
+
+def test_values_sitting_on_zero_are_not_called_a_change(tmp_path):
+    """The null this test is against, drawn from the same machinery."""
+    run = _pooled(tmp_path, _rows({"treated": [-0.6, 0.5, -0.4, 0.45, -0.5, 0.55]}))
+    row = run_contrasts(run, _config(_contrast(test="signed_rank",
+                                               groups=["treated"])),
+                        resamples=200).iloc[0]
+    assert float(row["p_value"]) > 0.05
+    assert not bool(row["significant"])
+
+
+def test_a_one_group_test_named_with_two_groups_is_refused():
+    """Refused where it is written rather than ignored where it is run.
+
+    A second group parses perfectly well and would then be dropped in silence,
+    leaving a row that says it compared two things and did not.
+    """
+    with pytest.raises(ValueError, match="one group against zero"):
+        _contrast(test="signed_rank", groups=["control", "treated"])
+
+
+def test_a_two_group_test_still_needs_two_groups():
+    with pytest.raises(ValueError, match="at least two"):
+        _contrast(test="mannwhitney", groups=["treated"])
+
+
+def test_a_one_group_test_with_too_few_cells_is_refused_like_any_other(tmp_path):
+    run = _pooled(tmp_path, _rows({"treated": [0.4, 0.5]}))
+    row = run_contrasts(run, _config(_contrast(test="signed_rank",
+                                               groups=["treated"])),
+                        resamples=40).iloc[0]
+    assert row["p_value"] == ""
+    assert str(MIN_UNITS) in row["note"]
+
+
+# ------------------------------- the table has to exist before anything is run
+
+
+def _declared(table: str, enabled: list[str] | None = None):
+    from analysis.cli import contrast_table_state, table_writers
+
+    config = AnalysisConfig(dataset="t", frame_interval_min=30.0, movies=[],
+                            output_root=".", enabled_modules=enabled or [])
+    return contrast_table_state(config, _contrast(table=table), table_writers())
+
+
+def test_a_contrast_against_a_table_nothing_writes_is_caught_before_measuring():
+    """The failure it replaces costs an hour and points at the wrong step.
+
+    A contrast naming a table that will not exist runs perfectly, writes a
+    refusal per metric, and gives "not in pooled/tables" as the reason - which
+    reads as a pooling problem rather than as the misspelling it is.
+    """
+    state, writer = _declared("trned")
+    assert state == "NO SUCH TABLE"
+    assert writer is None
+
+
+def test_a_contrast_against_a_switched_off_module_is_caught_too():
+    """The one that actually happened: the module exists and is not enabled."""
+    state, writer = _declared("trend", enabled=["morphology", "rhythms"])
+    assert state == "MODULE IS OFF"
+    assert writer == "trend"
+
+
+def test_a_contrast_against_an_enabled_module_passes():
+    assert _declared("trend", enabled=["morphology", "trend"]) == ("", "trend")
+
+
+def test_an_empty_enabled_list_means_every_module_rather_than_none():
+    """The same reading `run` takes; the two must not disagree."""
+    assert _declared("trend", enabled=[])[0] == ""
+
+
+def test_the_windowed_tables_belong_to_a_step_that_cannot_be_switched_off():
+    """They are not written by a module, so looking one up must not fail."""
+    state, writer = _declared("cell_summary_windowed", enabled=["morphology"])
+    assert state == ""
+    assert writer == "window"
+
+
+# ------------------------------------------------------------- metric groups
+
+
+def test_a_contrast_may_name_a_metric_group_instead_of_listing_columns():
+    """One set of columns, written once, tested and drawn from the same place."""
+    from analysis.metric_groups import build
+
+    groups = build({"circadian": ["cosinor_amplitude", "m10", "l5"]})
+    contrast = _contrast(metrics=["@circadian"], metric_groups=groups)
+    assert contrast.metrics == ("cosinor_amplitude", "m10", "l5")
+
+
+def test_a_group_reference_mixes_with_plain_column_names():
+    from analysis.metric_groups import build
+
+    groups = build({"circadian": ["m10", "l5"]})
+    contrast = _contrast(metrics=["area_px", "@circadian"], metric_groups=groups)
+    assert contrast.metrics == ("area_px", "m10", "l5")
+
+
+def test_a_column_in_two_groups_is_not_tested_twice():
+    """Otherwise the correction is applied across the same column twice."""
+    from analysis.metric_groups import build
+
+    groups = build({"a": ["m10", "l5"], "b": ["l5", "area_px"]})
+    contrast = _contrast(metrics=["@a", "@b"], metric_groups=groups)
+    assert contrast.metrics == ("m10", "l5", "area_px")
+
+
+def test_a_contrast_naming_a_group_nobody_declared_says_which_contrast():
+    with pytest.raises(ValueError, match="contrast 'c' metrics"):
+        _contrast(metrics=["@nope"])

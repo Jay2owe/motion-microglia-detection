@@ -32,7 +32,7 @@ from panels import surveillance as surveillance_panels
         Panel("ledger", surveillance_panels.exchange_ledger,
               title="Exchanged area versus net size change"),
         Panel("cancelled", surveillance_panels.cancelled_fraction,
-              title="Opposing edge motion"),
+              title="Balanced gained-and-lost footprint area"),
         Panel("against_size", common.scatter_with_margins, block=True,
               title="Exchange by cell size"),
     ),

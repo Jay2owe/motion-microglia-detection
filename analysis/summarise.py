@@ -403,12 +403,29 @@ def build_movie_summary(
         for metric, group in rhythms.groupby("metric"):
             per_metric[metric] = {
                 "cells_tested": int(len(group)),
-                "rhythmic_by_cosinor": int(group["rhythmic_cosinor"].sum()),
-                "rhythmic_by_both_tests": int(group["rhythmic_both"].sum()),
-                "median_free_period_hours": float(group["lombscargle_period_hours"].median())
-                if "lombscargle_period_hours" in group
+                "primary_rhythm_test": str(group["primary_rhythm_test"].iloc[0]),
+                "period_estimation_method": str(
+                    group.get("period_estimation_method", group["primary_rhythm_test"]).iloc[0]
+                ),
+                "rhythmic_by_primary_test": int(
+                    group["rhythmic"].fillna(False).astype(bool).sum()),
+                "rhythmic_by_cosinor": (
+                    int(group["rhythmic_cosinor"].sum())
+                    if group["rhythmic_cosinor"].notna().any() else None
+                ),
+                "rhythmic_by_both_tests": (
+                    int(group["rhythmic_both"].sum())
+                    if group["rhythmic_both"].notna().any() else None
+                ),
+                "median_best_period_hours": float(group["best_period_hours"].median())
+                if "best_period_hours" in group
                 else None,
-                "median_peak_hour": float(group["cosinor_peak_hour"].median()),
+                "median_free_period_hours": float(group["best_period_hours"].median())
+                if "best_period_hours" in group else None,
+                "median_peak_hour": float(
+                    (group["best_phase_hours"] if "best_phase_hours" in group
+                     else group["cosinor_peak_hour"]).median()
+                ),
             }
         population = tables.get("rhythms_population")
         if population is not None and not population.empty:
@@ -428,6 +445,10 @@ def build_movie_summary(
                 if row["metric"] in per_metric:
                     per_metric[row["metric"]].update(
                         {
+                            "null_false_positive_rate_primary": float(
+                                row["false_positive_rate_primary"]),
+                            "excess_over_null_primary": float(
+                                row["excess_over_null_primary"]),
                             "null_false_positive_rate_both": float(row["false_positive_rate_both"]),
                             "excess_over_null": float(row["excess_over_null_both"]),
                         }

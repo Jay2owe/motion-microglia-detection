@@ -370,7 +370,7 @@ def analyse_movie(
                 "status": "done",
                 "seconds": round(time.perf_counter() - module_started, 3),
                 "tables": {key: int(len(value)) for key, value in produced.items()},
-                "parameters": {**module.defaults, **context.module_params(name)},
+                "parameters": module.parameters(context),
             }
         )
 
@@ -577,8 +577,33 @@ def run(
     # Copied verbatim, options sub-block included. Nothing here reads it - a
     # figure resolves its own settings against its own declaration, and a block
     # this run cannot check is still a block the next reader can see.
+    # The metric groups go in resolved rather than as declared, and the
+    # declaration goes in beside them. A selector group means something
+    # different the day after a module gains a column, so the only way to
+    # answer "what counted as the circadian measurements in this figure" a year
+    # later is to have written down what it came out as at the time.
+    #
+    # The plan goes in twice, and both are wanted. `plots_requested` is what the
+    # author wrote; `plots` is what it expanded into. A bundle rebuilt months
+    # later has to be able to say what was asked for, not only what came out.
     (output_dir / "figures.json").write_text(
-        json.dumps({"figures": config.figures}, indent=2), encoding="utf-8"
+        json.dumps({
+            "figures": config.figures,
+            "metric_groups": {name: list(group.columns)
+                              for name, group in config.metric_groups.items()},
+            "metric_groups_declared": {name: group.declared
+                                       for name, group in config.metric_groups.items()},
+            "plots_requested": [
+                {"figure": request.figure,
+                 **({"for_each": {key: list(values)
+                                  for key, values in request.for_each.items()}}
+                    if request.for_each else {}),
+                 **({"options": request.options} if request.options else {}),
+                 **({"as": request.naming} if request.naming else {}),
+                 **request.text}
+                for request in config.plots],
+            "plots": [item.as_dict() for item in config.plot_items()],
+        }, indent=2), encoding="utf-8"
     )
 
     manifest = {

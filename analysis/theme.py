@@ -79,6 +79,7 @@ BASE_COLOURS: dict[str, str] = {
     "blank": "#e6e6e6",
     # Okabe-Ito, for the colourblind-safe preset
     "okabe_orange": "#E69F00",
+    "okabe_yellow": "#F0E442",
     "okabe_sky_blue": "#56B4E9",
     "okabe_bluish_green": "#009E73",
     "okabe_blue": "#0072B2",
@@ -340,6 +341,24 @@ def _base() -> dict[str, Any]:
     # 21 h to one at 45 h needs the day boundaries marked, not round decimals.
     # Must stay a factor or a multiple of 24; see ``Theme.hour_ticks``.
     style["hours_per_tick"] = 24.0
+    # Continuous value axes opt into this shared rule. It reproduces the useful
+    # part of PyFLASH's convention: five ticks from a visible zero anchor to an
+    # outer limit rounded up to a multiple of 5 in the second significant
+    # figure. The three settings are data so a run can choose another density,
+    # rounding structure or anchor without changing plotting code.
+    style["value_tick_count"] = 5
+    style["value_tick_round_to"] = 5.0
+    style["value_tick_start"] = 0.0
+    # Every continuous colour key uses one physical shape. Relative inset
+    # widths turn a key beside a small multiple into an unreadable hairline;
+    # nominal inches keep the same key legible beside every panel size.
+    style["colour_bar_width_inches"] = 0.18
+    style["colour_bar_height_inches"] = 2.2
+    style["colour_bar_gap_inches"] = 0.16
+    # Time ticks stay aligned to this origin. ``Theme.hour_ticks`` includes the
+    # aligned tick immediately before the first observation, so a recording
+    # beginning at 0.5 h still has a visible starting tick at 0 h.
+    style["hours_tick_start"] = 0.0
     return style
 
 
@@ -621,9 +640,104 @@ class Theme:
             raise KeyError(f"unknown stroke {kind!r}; try one of {', '.join(widths)}")
         return float(widths[kind])
 
+    # ------------------------------------------------------------ value axes
+
+    @staticmethod
+    def _rounded_tick_span(value: float, round_to: float) -> float:
+        """Round a positive span up on PyFLASH's significant-figure grid."""
+        value = abs(float(value))
+        if value == 0:
+            return 0.0
+        order = 10.0 ** (math.floor(math.log10(value)) - 1)
+        quantum = float(round_to) * order
+        return math.ceil(value / quantum - 1e-12) * quantum
+
+    def value_ticks(
+        self,
+        low: float,
+        high: float,
+        *,
+        count: int | None = None,
+        round_to: float | None = None,
+        start: float | None = None,
+    ) -> list[float]:
+        """Shared ticks for a continuous value axis.
+
+        Positive values run from the configured start to a rounded upper
+        limit; negative values end at the start. A range crossing the start is
+        symmetric around it, which keeps zero visible in signed change plots.
+        The default is five ticks and PyFLASH's multiple-of-5 rounding in the
+        second significant figure.
+        """
+        count = int(self.style["value_tick_count"] if count is None else count)
+        round_to = float(
+            self.style["value_tick_round_to"] if round_to is None else round_to
+        )
+        start = float(self.style["value_tick_start"] if start is None else start)
+        low, high = float(low), float(high)
+        if not all(math.isfinite(value) for value in (low, high, round_to, start)):
+            raise ValueError("value tick limits, start and rounding must be finite")
+        if count < 2:
+            raise ValueError("value_tick_count must be at least 2")
+        if round_to <= 0:
+            raise ValueError("value_tick_round_to must be positive")
+        if high < low:
+            low, high = high, low
+
+        if low < start < high:
+            span = self._rounded_tick_span(
+                max(start - low, high - start), round_to
+            )
+            lower, upper = start - span, start + span
+        elif high <= start:
+            span = self._rounded_tick_span(start - low, round_to)
+            lower, upper = start - span, start
+        else:
+            span = self._rounded_tick_span(high - start, round_to)
+            lower, upper = start, start + span
+        if lower == upper:
+            return [round(start, 12)]
+        step = (upper - lower) / (count - 1)
+        ticks = [round(lower + index * step, 12) for index in range(count)]
+        return [0.0 if abs(value) < 1e-12 else value for value in ticks]
+
+    def set_value_ticks(
+        self,
+        ax: Any,
+        *,
+        low: float | None = None,
+        high: float | None = None,
+        axis: str = "y",
+        count: int | None = None,
+        round_to: float | None = None,
+        start: float | None = None,
+    ) -> list[float]:
+        """Apply :meth:`value_ticks` and matching limits to one numeric axis."""
+        if axis not in ("x", "y"):
+            raise ValueError("axis must be 'x' or 'y'")
+        limits = ax.get_xlim() if axis == "x" else ax.get_ylim()
+        ticks = self.value_ticks(
+            limits[0] if low is None else low,
+            limits[1] if high is None else high,
+            count=count, round_to=round_to, start=start,
+        )
+        if axis == "x":
+            ax.set_xlim(ticks[0], ticks[-1])
+            ax.set_xticks(ticks)
+        else:
+            ax.set_ylim(ticks[0], ticks[-1])
+            ax.set_yticks(ticks)
+        return ticks
+
     # ------------------------------------------------------------- time axes
 
-    def hour_ticks(self, low: float, high: float, step: float | None = None) -> list[float]:
+    def hour_ticks(
+        self,
+        low: float,
+        high: float,
+        step: float | None = None,
+        start: float | None = None,
+    ) -> list[float]:
         """Tick positions for an axis measured in hours.
 
         A day is the unit the experiment is about, so the ticks count in days,
@@ -632,14 +746,19 @@ class Theme:
         time of day, whereas 10 h puts the third tick at 06:00 and invites the
         reader to compare two peaks against a grid that means nothing.
 
-        Returns the positions rather than touching an axis, so a caller is free
-        to label them differently (in days, say) without a second rule for
-        where they go.
+        The aligned tick immediately before the first observation is retained,
+        so every time axis has a visible starting tick. ``start`` sets the
+        alignment origin and defaults to the theme's ``hours_tick_start``.
+        Positions are returned rather than applied, so a caller may label them
+        differently without inventing a second placement rule.
         """
         try:
             step = parse_hours_per_tick(self.style["hours_per_tick"] if step is None else step)
         except ValueError as error:
             raise ValueError(f"hours_per_tick {error}") from None
+        start = float(self.style["hours_tick_start"] if start is None else start)
+        if not math.isfinite(start):
+            raise ValueError("hours_tick_start must be finite")
         low, high = float(low), float(high)
         if high < low:
             low, high = high, low
@@ -647,7 +766,7 @@ class Theme:
         # the axis, and floating-point hours from a frame interval rarely land
         # on an integer.
         edge = step * 1e-9
-        first = math.ceil((low - edge) / step) * step
+        first = start + math.floor((low + edge - start) / step) * step
         count = int(math.floor((high + edge - first) / step)) + 1
         return [round(first + index * step, 6) for index in range(max(count, 0))]
 
@@ -902,6 +1021,17 @@ class Theme:
             },
             "figure_size": list(self.style["figure_size"]),
             "hours_per_tick": self.style["hours_per_tick"],
+            "hours_tick_start": self.style["hours_tick_start"],
+            "value_ticks": {
+                "count": self.style["value_tick_count"],
+                "round_to": self.style["value_tick_round_to"],
+                "start": self.style["value_tick_start"],
+            },
+            "colour_bar": {
+                "width_inches": self.style["colour_bar_width_inches"],
+                "height_inches": self.style["colour_bar_height_inches"],
+                "gap_inches": self.style["colour_bar_gap_inches"],
+            },
             "save_dpi": self.style["save_dpi"],
             "colormaps": {
                 key: self.style[key]
@@ -931,6 +1061,9 @@ _TUNABLE = {
     "legend_line_width", "marker_size", "scatter_alpha", "figure_size",
     "save_dpi", "save_bbox", "save_pad_inches", "transparent",
     "diverging_cmap", "sequential_cmap", "image_cmap", "hours_per_tick",
+    "hours_tick_start", "value_tick_count", "value_tick_round_to",
+    "value_tick_start", "colour_bar_width_inches", "colour_bar_height_inches",
+    "colour_bar_gap_inches",
 }
 
 
@@ -956,6 +1089,11 @@ def load_theme(source: Any = None) -> Theme:
           "stroke_scale": 1.0,
           "line_width": 2.4,
           "figure_size": [7.0, 5.0],
+          "value_tick_count": 5,
+          "value_tick_round_to": 5,
+          "value_tick_start": 0,
+          "hours_per_tick": 12,
+          "hours_tick_start": 0,
           "transparent": true
         }
 
@@ -998,6 +1136,31 @@ def load_theme(source: Any = None) -> Theme:
         style["hours_per_tick"] = parse_hours_per_tick(style["hours_per_tick"])
     except ValueError as error:
         raise ValueError(f"hours_per_tick {error}") from None
+    try:
+        raw_count = float(style["value_tick_count"])
+        if not raw_count.is_integer() or int(raw_count) < 2:
+            raise ValueError("must be a whole number of at least 2")
+        style["value_tick_count"] = int(raw_count)
+        style["value_tick_round_to"] = float(style["value_tick_round_to"])
+        style["value_tick_start"] = float(style["value_tick_start"])
+        style["hours_tick_start"] = float(style["hours_tick_start"])
+        for key in ("colour_bar_width_inches", "colour_bar_height_inches",
+                    "colour_bar_gap_inches"):
+            style[key] = float(style[key])
+        if style["value_tick_round_to"] <= 0:
+            raise ValueError("value_tick_round_to must be positive")
+        if style["colour_bar_width_inches"] <= 0 or style["colour_bar_height_inches"] <= 0:
+            raise ValueError("colour-bar width and height must be positive")
+        if style["colour_bar_gap_inches"] < 0:
+            raise ValueError("colour-bar gap must be non-negative")
+        if not all(math.isfinite(style[key]) for key in (
+            "value_tick_round_to", "value_tick_start", "hours_tick_start",
+            "colour_bar_width_inches", "colour_bar_height_inches",
+            "colour_bar_gap_inches",
+        )):
+            raise ValueError("tick settings must be finite")
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"theme tick settings {error}") from None
 
     role_overrides = block.get("roles") or {}
     if not isinstance(role_overrides, dict):

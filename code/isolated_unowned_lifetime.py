@@ -144,6 +144,11 @@ def discover(labels: np.ndarray, unclaimed: np.ndarray,
         "maximum_terminal_to_initial_evidence_ratio", 0.25))
     maximum_final_visibility = float(params.get(
         "maximum_final_visibility", 0.50))
+    allow_recording_boundary = bool(params.get(
+        "allow_recording_boundary_lifetime", False))
+    boundary_end = int(np.floor(
+        (frame_count - 1) * float(params.get(
+            "minimum_recording_boundary_end_fraction", 0.99))))
     rows: list[dict] = []
 
     for track, group in attached.groupby("track_id", sort=True):
@@ -200,10 +205,12 @@ def discover(labels: np.ndarray, unclaimed: np.ndarray,
             reasons.append("physical_encounter_present")
         if median_separation < minimum_separation:
             reasons.append("insufficient_isolation")
-        if evidence_ratio > maximum_fade_ratio:
-            reasons.append("lifetime_does_not_end_in_evidence_fade")
-        if final_visibility > maximum_final_visibility:
-            reasons.append("lifetime_does_not_end_at_low_visibility")
+        reaches_recording_boundary = last >= boundary_end
+        if not (allow_recording_boundary and reaches_recording_boundary):
+            if evidence_ratio > maximum_fade_ratio:
+                reasons.append("lifetime_does_not_end_in_evidence_fade")
+            if final_visibility > maximum_final_visibility:
+                reasons.append("lifetime_does_not_end_at_low_visibility")
         if predecessors:
             reasons.append("compatible_predecessor_exists")
         if successors:
@@ -227,7 +234,8 @@ def discover(labels: np.ndarray, unclaimed: np.ndarray,
             discovery_status="eligible" if not reasons else "rejected",
             discovery_reason="eligible" if not reasons else "|".join(reasons),
         )))
-    return pd.DataFrame(rows), attached
+    return (pd.DataFrame(rows, columns=list(Proposal.__dataclass_fields__)),
+            attached)
 
 
 def _components_overlapping(frame: np.ndarray, seed: np.ndarray) -> np.ndarray:

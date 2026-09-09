@@ -1,16 +1,9 @@
-"""The non-parametric circadian block, checked against a second implementation.
+"""The Circadian Workbench non-parametric gateway and its result contract.
 
-This is the stage where a wrong formula is easiest to ship and hardest to
-notice: interdaily stability and intradaily variability both look entirely
-plausible when coded slightly wrong, and nothing downstream would complain. So
-the first test here is not a hand-worked example at all - it feeds one trace to
-this module and to the lab's own ``circadian_workbench``, which implements all
-five of these measures already, and requires the same answer. That turns "I
-think this formula is right" into a comparison against code the lab trusts.
-
-The rest cover what the workbench cannot check for us: the guard that stops a
-flat trace inventing an onset, the honesty columns, and the fact that these
-hours are hours since the recording started rather than times of day.
+The tests exercise the public adapter rather than a copied implementation. They
+cover the guard that stops a flat trace inventing an onset, the honesty columns,
+and the fact that these hours are hours since the recording started rather than
+times of day.
 """
 
 from __future__ import annotations
@@ -19,8 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.modules.rhythms import (DEFAULTS, _template_marker, _template_scores,
-                                      derive, nonparametric)
+from analysis.modules.rhythms import DEFAULTS, derive, nonparametric
 from analysis.registry import MeasurementContext
 from analysis.units import Scale
 
@@ -63,17 +55,18 @@ def _cell_frame(hours: np.ndarray, values: np.ndarray, identity: int = 1) -> pd.
     })
 
 
-# ------------------------------------------------- against the lab's own code
+# ----------------------------------------------------- through the public gateway
 
 
-def test_the_five_shared_measures_agree_with_circadian_workbench() -> None:
-    """The same trace through both implementations, to floating-point tolerance.
+def test_the_nonparametric_name_is_the_circadian_workbench_gateway() -> None:
+    """The rhythms module cannot drift into a second implementation."""
+    from analysis import circadian
 
-    Skipped rather than made a hard dependency: ``circadian-workbench`` pulls a
-    web stack into what ships as one measurement tool, so the four functions are
-    copied and this is what stops the copy drifting.
-    """
-    workbench = pytest.importorskip("circadian_workbench.analysis")
+    assert nonparametric is circadian.nonparametric
+
+
+def test_the_five_shared_measures_are_returned_by_the_gateway() -> None:
+    """The public adapter preserves the complete legacy result contract."""
 
     hours, values = _sine(days=4, peak_hour=14.0)
     # Two gaps, because a formula that is right on a complete trace and wrong on
@@ -84,38 +77,10 @@ def test_the_five_shared_measures_agree_with_circadian_workbench() -> None:
 
     ours = nonparametric(hours[measured], values[measured], _params())
 
-    theirs = workbench.nonparametric_metrics(
-        pd.DataFrame({
-            "timestamp": pd.date_range("2026-01-01 00:00", periods=len(hours), freq="1h")[measured],
-            "analysis_activity": values[measured],
-        }),
-        bin_minutes=60,
-    )
-
-    assert ours["l5"] == pytest.approx(theirs["l5_mean"])
-    assert ours["m10"] == pytest.approx(theirs["m10_mean"])
-    assert ours["l5_onset_hour"] == pytest.approx(theirs["l5_start_hours"])
-    assert ours["m10_onset_hour"] == pytest.approx(theirs["m10_start_hours"])
-    assert ours["relative_amplitude"] == pytest.approx(theirs["relative_amplitude"])
-    assert ours["interdaily_stability"] == pytest.approx(theirs["interdaily_stability"])
-    assert ours["intradaily_variability"] == pytest.approx(theirs["intradaily_variability"])
-
-
-def test_the_onset_template_agrees_with_circadian_workbench() -> None:
-    """Onset and offset use ClockLab's template, scored the same way.
-
-    The scores are compared rather than only the markers, because two
-    implementations can pick the same bin from differently shaped curves and
-    then disagree on the next dataset.
-    """
-    workbench = pytest.importorskip("circadian_workbench.analysis")
-    thresholded = np.where(np.arange(24) % 24 >= 8, 1.0, -1.0)
-    thresholded[20:] = -1.0
-    ours = _template_scores(thresholded, off_bins=6, on_bins=6)
-    theirs = workbench._template_scores(thresholded, 6, 6)
-    assert np.allclose(ours[0], theirs[0])
-    assert np.allclose(ours[1], theirs[1])
-    assert _template_marker(ours[0], 1.0) == pytest.approx(workbench._template_marker(theirs[0], 60)[0])
+    for name in ("l5", "m10", "l5_onset_hour", "m10_onset_hour",
+                 "relative_amplitude", "interdaily_stability",
+                 "intradaily_variability"):
+        assert np.isfinite(ours[name])
 
 
 # ---------------------------------------------------------- a clean rhythm
@@ -273,6 +238,7 @@ def test_the_module_writes_the_new_columns_beside_the_fits() -> None:
     hours, values = _sine(days=4)
     table = derive(_cell_frame(hours, values),
                    _context(params={"metrics": ["corrected_mean"],
+                                    "daily_profile_measures": True,
                                     "null_surrogates_per_cell": 0}))["rhythms"]
     assert len(table) == 1
     row = table.iloc[0]
@@ -281,7 +247,19 @@ def test_the_module_writes_the_new_columns_beside_the_fits() -> None:
                    "hours_binned", "stability_underdetermined", "onset_found"):
         assert column in table.columns, column
     assert np.isfinite(row["relative_amplitude"])
-    assert np.isfinite(row["cosinor_relative_amplitude"])
+    assert np.isfinite(row["best_period_hours"])
+
+
+def test_daily_profile_measures_are_explicit_opt_in() -> None:
+    hours, values = _sine(days=4)
+    row = derive(
+        _cell_frame(hours, values),
+        _context(params={"metrics": ["corrected_mean"],
+                         "null_surrogates_per_cell": 0}),
+    )["rhythms"].iloc[0]
+    assert not row["daily_profile_measures_enabled"]
+    assert np.isnan(row["relative_amplitude"])
+    assert np.isnan(row["onset_hour"])
 
 
 def test_the_two_relative_amplitudes_are_not_the_same_number() -> None:
@@ -295,7 +273,9 @@ def test_the_two_relative_amplitudes_are_not_the_same_number() -> None:
     hours, values = _sine(days=4, amplitude=30.0, level=100.0)
     row = derive(_cell_frame(hours, values),
                  _context(params={"metrics": ["corrected_mean"],
-                                  "null_surrogates_per_cell": 0}))["rhythms"].iloc[0]
+                                  "null_surrogates_per_cell": 0,
+                                  "daily_profile_measures": True,
+                                  "descriptive_cosinor": True}))["rhythms"].iloc[0]
     assert row["relative_amplitude"] != pytest.approx(row["cosinor_relative_amplitude"])
 
 

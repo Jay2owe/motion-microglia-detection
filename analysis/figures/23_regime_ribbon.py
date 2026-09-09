@@ -1,8 +1,8 @@
-"""Figure 23: behavioural regime assigned to every cell-frame.
+"""Figure 23: size-and-movement subgroup assigned to every cell-frame.
 
-The states are data-derived clusters, not categories the package believes in.
-Each is named by the measurement it is most extreme on, and a cell-frame whose
-assignment was marginal is washed out rather than dropped.
+Current-frame size and movement into that frame are each categorised as low,
+medium or high. Their nine combinations are explicit, and a cell-frame whose
+assignment lies near a category boundary is washed out rather than dropped.
 
     python analysis/figures/23_regime_ribbon.py <run>
     ... --order first_appearance     row order of the ribbon
@@ -26,8 +26,8 @@ from panels import morphology as morphology_panels
 @figure(
     number=23,
     slug="regime-ribbon",
-    summary="behavioural regime assigned to every cell-frame",
-    title="Behavioural regime assigned to every cell-frame",
+    summary="size-and-movement subgroup assigned to every cell-frame",
+    title="Size-and-movement subgroup assigned to every cell-frame",
     reads=(Table("cell_frame.csv", module="regimes"),
            Table("regime_profiles.csv", module="regimes")),
     panels=(
@@ -88,7 +88,8 @@ def build(ctx: FigureContext) -> FigureResult:
         common.semantic_legend(axes["occupancy"], ctx.theme, location="inside", columns=2)
     if "profiles" in axes:
         feature_columns = [column for column in profiles.columns
-                           if column not in {"stem", "condition", "subject", "regime"}
+                           if column not in {"stem", "condition", "subject", "regime",
+                                             "regime_observations"}
                            and pd.api.types.is_numeric_dtype(profiles[column])]
         matrix_values = profiles[feature_columns].to_numpy(float)
         matrix_values = (matrix_values - np.nanmean(matrix_values, axis=0)) / np.where(
@@ -112,7 +113,7 @@ def build(ctx: FigureContext) -> FigureResult:
         figure=fig,
         axes=list(axes.values()),
         figure_data=figure_data,
-        subtitle=f"{len(regime_ids)} data-derived states named by their strongest relative feature; low-margin assignments are washed out.",
+        subtitle=f"{len(regime_ids)} observed combinations of low, medium and high size and movement; boundary assignments are washed out.",
         auxiliary={"regime_profiles.csv": profiles},
     )
 

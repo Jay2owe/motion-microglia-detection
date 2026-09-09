@@ -325,6 +325,9 @@ def apply_dependency_ordered_proposals(
     proposal releases *all* of that owner's pixels in the same frame. This solves a
     chain such as 50->68 while 68->70, without ever creating duplicate 68 masks.
     """
+    if proposals.empty:
+        return labels.copy(), pd.DataFrame(
+            columns=["proposal_id", "outcome", "changed_pixels"])
     visible = points[points["physically_visible"].astype(bool)]
     point_index = points.set_index(["track_id", "frame"], drop=False)
     minimum_area_ratio = float(params.get("minimum_component_area_ratio", 0.25))

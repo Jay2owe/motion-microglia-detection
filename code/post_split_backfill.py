@@ -241,7 +241,8 @@ def discover(scored: pd.DataFrame, labels: np.ndarray, raw: np.ndarray,
             discovery_reason="eligible" if not reasons else "|".join(reasons),
         )
         proposals.append(asdict(proposal))
-    return pd.DataFrame(proposals)
+    return pd.DataFrame(
+        proposals, columns=list(Proposal.__dataclass_fields__))
 
 
 def _component_excess(frame: np.ndarray, identity: int) -> int:
@@ -477,4 +478,3 @@ def run(upstream_dir: Path | None, params: dict, out) -> dict:
     paths["metrics"].write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     return {"outputs": paths, "summary": metrics}
-

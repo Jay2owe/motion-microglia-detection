@@ -321,5 +321,5 @@ def test_the_vocabulary_costs_nothing_until_something_asks() -> None:
 
     fresh = _metrics._Vocabulary(dict(RESIDUAL))
     assert "not yet built" in repr(fresh)
-    assert fresh["turnover_index"].label == "Pixels replaced"
+    assert fresh["turnover_index"].label == "Footprint turnover fraction"
     assert "not yet built" not in repr(fresh)

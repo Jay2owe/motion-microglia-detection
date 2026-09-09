@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
+import os
 import platform
 import shutil
 import sys
@@ -17,8 +18,51 @@ from PIL import Image, ImageDraw
 
 from accepted_history import (
     AcceptedHistoryInputs, load_history_inputs_from_run,
-    _save_final_labels, _well_issue001_isolated_pair_encounter_recovery,
+    _save_final_labels,
+    _well_b2_issue008_short_owned_companion_projection_calibration,
+    _well_b2_issue009_ownerless_cohort_latent_gap_completion,
+    _well_b2_issue011_recurrent_same_owner_branch_swarm_calibration,
+    _well_b2_issue012_aggregate_shared_core_calibration,
+    _well_b2_issue013_weak_terminal_reference_relay_calibration,
+    _well_b2_issue014_single_owner_multireference_relay_calibration,
+    _well_b2_issue015_event_local_subresolution_artifact_calibration,
+    _well_b2_issue016_short_ownerless_subcellular_reference_calibration,
+    _well_b2_issue018_recording_start_two_seat_inheritance,
+    _well_b2_issue026_detached_projection_owner_relay_calibration,
+    _well_b2_issue028_right_censored_novel_body_calibration,
+    _well_b3_issue010_detached_fading_projection_calibration,
+    _well_b3_issue012_delayed_owner_projection_flash,
+    _well_b3_issue012_explained_projection_event_calibration,
+    _well_b3_issue013_anchored_projection_owner_relay,
+    _well_b3_issue013_ephemeral_speckle_alias_retirement,
+    _well_b3_issue013_anchored_projection_raw_gap_completion,
+    _well_b3_issue014_terminal_projection_chain_completion,
+    _well_b3_issue015_conserved_multi_anchor_projection_calibration,
+    _well_b3_issue016_body_scale_ownerless_allocation,
+    _well_b3_issue017_terminal_boundary_vanished_seat,
+    _well_b3_issue017_terminal_boundary_event_calibration,
+    _well_b3_issue018_fragmented_subcellular_episode_calibration,
+    _well_b3_issue019_bracketed_ownerless_seat_completion,
+    _well_b3_issue020_fragmented_encounter_lineage_calibration,
+    _well_b3_issue021_temporal_core_path_lineage,
+    _well_b3_issue022_ownerless_reference_handoff_calibration,
+    _well_b3_issue023_asymmetric_fusion_area_flip_recovery,
+    _well_b3_issue024_recurrent_dominant_body_relay,
+    _well_b3_issue025_established_seat_cycle_recovery,
+    _well_b3_issue026_dormant_seat_successor_recovery,
+    _well_b3_issue027_staggered_fusion_exchange_recovery,
+    _well_b4_issue001_large_persistent_reference_relay,
+    _well_b4_issue002_dormant_owner_reciprocal_partition,
+    _well_b4_issue003_conservative_episode_ownership,
+    _well_b4_issue004_original_body_continuity,
+    _well_b3_issue004_reconnected_companion_merge_partition,
+    _well_b3_issue005_component_continuity_duplicate_takeover,
+    _well_b3_issue006_right_censored_seat_partition,
+    _well_b3_issue007_right_censored_reciprocal_exchange,
+    _well_b3_issue008_persistent_single_owner_flash,
     run_accepted_history)
+import raw_physical_hypotheses
+import retirement_aware_persistence_integration
 from common import (Config, ROOT, Run, OUTLINE_COLOURS, display_raw, label_edges,
                     load_stack, outline_overlay, read_json, save_rgb_stack,
                     save_stack, sha256, validate_labels, write_json)
@@ -1651,16 +1695,25 @@ def run_accepted_only(run_name: str, upstream_run: str, stem: str,
 
 
 def run_accepted_tail(run_name: str, parent_run: str, stem: str,
-                      config_path: Path | None = None) -> None:
-    """Append a newly accepted tail rule to an immutable accepted parent."""
+                      config_path: Path | None = None,
+                      events_path: Path | None = None,
+                      event_members_path: Path | None = None,
+                      calibration_name: str = "short-owned-companion",
+                      calibration_points_path: Path | None = None) -> None:
+    """Append an accepted score-calibration tail to an immutable parent."""
     cfg = Config.load(config_path)
-    if stem not in cfg.stems:
-        raise ValueError(f"stem {stem!r} is not configured: {cfg.stems}")
     if (ROOT / "m22_accepted_history" / run_name).exists():
         raise FileExistsError(
             f"immutable accepted run already exists: m22_accepted_history/{run_name}")
-    sources = _pinned_paths(cfg, stem)
-    _verify_pins(cfg, stem)
+    if stem in cfg.values.get("pinned_files", {}):
+        sources = _pinned_paths(cfg, stem)
+        _verify_pins(cfg, stem)
+    else:
+        registered_raw = ROOT / "registered inputs" / f"{stem}.tif"
+        if not registered_raw.is_file():
+            raise FileNotFoundError(
+                f"accepted-tail raw input is missing: {registered_raw}")
+        sources = {"registered_raw": registered_raw}
     parent = ROOT / "m22_accepted_history" / parent_run
     parent_manifest_path = parent / "run.json"
     if not parent_manifest_path.is_file():
@@ -1672,51 +1725,296 @@ def run_accepted_tail(run_name: str, parent_run: str, stem: str,
     if not parent_work.is_dir():
         raise FileNotFoundError(
             f"accepted parent history is missing: {parent_work}")
+    if events_path is None or event_members_path is None:
+        raise ValueError(
+            "score-only accepted tail requires --accepted-tail-events and "
+            "--accepted-tail-event-members from the freshly scored parent")
+    events_path = Path(events_path).resolve()
+    event_members_path = Path(event_members_path).resolve()
+    if not events_path.is_file() or not event_members_path.is_file():
+        raise FileNotFoundError(
+            "accepted-tail event evidence is missing: "
+            f"{events_path}, {event_members_path}")
+    if calibration_name in {"aggregate-shared-core", "weak-terminal-relay",
+                            "single-owner-multireference-relay",
+                            "event-local-subresolution",
+                            "short-ownerless-subcellular",
+                            "detached-projection-owner-relay",
+                            "right-censored-novel-body",
+                            "detached-fading-projection",
+                            "fragmented-subcellular-episode",
+                            "ownerless-reference-handoff"}:
+        if calibration_points_path is None:
+            raise ValueError(
+                "this score calibration requires the current scorer's "
+                "--accepted-tail-points table")
+        calibration_points_path = Path(calibration_points_path).resolve()
+        if not calibration_points_path.is_file():
+            raise FileNotFoundError(
+                "accepted-tail scored point evidence is missing: "
+                f"{calibration_points_path}")
 
     run = Run("m22_accepted_history", run_name, {
         "stem": stem,
         "source_frame_offset": 2,
         "targeting_mode": "field_wide_discovery",
         "identity_target_count": 0,
+        "owner_target_count": 0,
         "track_target_count": 0,
         "frame_target_count": 0,
         "coordinate_target_count": 0,
         "event_target_count": 0,
         "region_target_count": 0,
+        "review_case_target_count": 0,
         "source_run": parent_run,
         "accepted_tail_parent": parent_run,
+        "events_source_sha256": sha256(events_path),
+        "event_members_source_sha256": sha256(event_members_path),
+        "accepted_tail_calibration": calibration_name,
+        "accepted_tail_points_sha256": (
+            sha256(calibration_points_path)
+            if calibration_points_path is not None else None),
     }, upstream=f"m22_accepted_history/{parent_run}")
     try:
         work = run.dir / "mid/accepted_history"
-        shutil.copytree(parent_work, work, dirs_exist_ok=True)
+        _clone_accepted_history(parent_work, work)
         parent_labels_path = parent / "out" / f"{stem}.tif"
         parent_unclaimed_path = (
             parent / "out" / f"{stem}_unclaimed_original_ids.tif")
         labels = load_stack(parent_labels_path)
         unclaimed = load_stack(parent_unclaimed_path)
-        raw = load_stack(sources["registered_raw"])[2:2 + len(labels)]
-        candidate, candidate_unclaimed, audit, metrics = \
-            _well_issue001_isolated_pair_encounter_recovery(
-                labels, unclaimed, raw, cfg, work)
+        latent_points = pd.read_csv(
+            work / "26_latent_body_tracks/out/latent_track_points.csv")
+        raw = load_stack(sources["registered_raw"])
+        events = pd.read_csv(events_path)
+        members = pd.read_csv(event_members_path)
+        if calibration_name == "explained-projection-event":
+            applications_path = (
+                work / "97_delayed_owner_projection_flash/out"
+                / "delayed_owner_projection_flash_applications.csv")
+            if not applications_path.is_file():
+                raise FileNotFoundError(
+                    "accepted delayed-owner producer ledger is missing: "
+                    + str(applications_path))
+            applications = pd.read_csv(applications_path)
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b3_issue012_explained_projection_event_calibration(
+                    labels, unclaimed, events, members, applications,
+                    cfg, work)
+            stage_name = "98_explained_projection_event_calibration"
+            audits = {
+                "explained_projection_event_audit":
+                    "explained_projection_event_audit.csv",
+            }
+            summary_prefix = "explained_projection_event"
+            calibrated_count_key = \
+                "events_removed_as_explained_projections"
+        elif calibration_name == "recurrent-branch-swarm":
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue011_recurrent_same_owner_branch_swarm_calibration(
+                    labels, unclaimed, latent_points, events, members, cfg, work)
+            stage_name = "81_recurrent_same_owner_branch_swarm_calibration"
+            audits = {
+                "recurrent_branch_swarm_audit":
+                    "recurrent_branch_swarm_audit.csv",
+            }
+            summary_prefix = "recurrent_branch_swarm"
+            calibrated_count_key = "events_calibrated_nonbiological"
+        elif calibration_name == "aggregate-shared-core":
+            scored_points = pd.read_csv(calibration_points_path)
+            (candidate, candidate_unclaimed, calibrated, calibrated_members,
+             source_audit, event_audit, metrics) = \
+                _well_b2_issue012_aggregate_shared_core_calibration(
+                    labels, unclaimed, raw, scored_points, events, members,
+                    cfg, work)
+            stage_name = "82_aggregate_shared_core_calibration"
+            audits = {
+                "aggregate_shared_core_source_audit":
+                    "aggregate_shared_core_source_audit.csv",
+                "aggregate_shared_core_event_audit":
+                    "aggregate_shared_core_event_audit.csv",
+            }
+            summary_prefix = "aggregate_shared_core"
+            calibrated_count_key = "events_reclassified"
+        elif calibration_name == "weak-terminal-relay":
+            scored_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue013_weak_terminal_reference_relay_calibration(
+                    labels, unclaimed, raw, scored_points, events, members,
+                    cfg, work)
+            stage_name = "83_weak_terminal_reference_relay_calibration"
+            audits = {
+                "weak_terminal_reference_relay_audit":
+                    "weak_terminal_reference_relay_audit.csv",
+            }
+            summary_prefix = "weak_terminal_reference_relay"
+            calibrated_count_key = "events_reclassified"
+        elif calibration_name == "single-owner-multireference-relay":
+            scored_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue014_single_owner_multireference_relay_calibration(
+                    labels, unclaimed, scored_points, events, members,
+                    cfg, work)
+            stage_name = "84_single_owner_multireference_relay_calibration"
+            audits = {
+                "single_owner_multireference_relay_audit":
+                    "single_owner_multireference_relay_audit.csv",
+            }
+            summary_prefix = "single_owner_multireference_relay"
+            calibrated_count_key = "events_reclassified"
+        elif calibration_name == "event-local-subresolution":
+            scored_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.read_csv(
+                work / "25_raw_physical_hypotheses/out"
+                / "frame_evidence_thresholds.csv")
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue015_event_local_subresolution_artifact_calibration(
+                    labels, unclaimed, raw, scored_points, thresholds,
+                    events, members, cfg, work)
+            stage_name = "85_event_local_subresolution_artifact_calibration"
+            audits = {
+                "event_local_subresolution_audit":
+                    "event_local_subresolution_audit.csv",
+            }
+            summary_prefix = "event_local_subresolution"
+            calibrated_count_key = "events_calibrated_nonbiological"
+        elif calibration_name == "short-ownerless-subcellular":
+            scored_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.read_csv(
+                work / "25_raw_physical_hypotheses/out"
+                / "frame_evidence_thresholds.csv")
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue016_short_ownerless_subcellular_reference_calibration(
+                    labels, unclaimed, raw, scored_points, thresholds,
+                    events, members, cfg, work)
+            stage_name = "86_short_ownerless_subcellular_reference_calibration"
+            audits = {
+                "short_ownerless_subcellular_audit":
+                    "short_ownerless_subcellular_audit.csv",
+            }
+            summary_prefix = "short_ownerless_subcellular"
+            calibrated_count_key = "events_calibrated_nonbiological"
+        elif calibration_name == "detached-projection-owner-relay":
+            scored_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue026_detached_projection_owner_relay_calibration(
+                    labels, unclaimed, scored_points, events, members,
+                    cfg, work)
+            stage_name = "88_detached_projection_owner_relay_calibration"
+            audits = {
+                "detached_projection_owner_relay_audit":
+                    "detached_projection_owner_relay_audit.csv",
+            }
+            summary_prefix = "detached_projection_owner_relay"
+            calibrated_count_key = "events_reclassified"
+        elif calibration_name == "right-censored-novel-body":
+            scored_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.read_csv(
+                work / "25_raw_physical_hypotheses/out"
+                / "frame_evidence_thresholds.csv")
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue028_right_censored_novel_body_calibration(
+                    labels, unclaimed, raw, scored_points, thresholds,
+                    events, members, cfg, work)
+            stage_name = "89_right_censored_novel_body_calibration"
+            audits = {
+                "right_censored_novel_body_audit":
+                    "right_censored_novel_body_audit.csv",
+            }
+            summary_prefix = "right_censored_novel_body"
+            calibrated_count_key = "right_censored_events_calibrated"
+        elif calibration_name == "detached-fading-projection":
+            scored_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b3_issue010_detached_fading_projection_calibration(
+                    labels, unclaimed, scored_points, events, members,
+                    cfg, work)
+            stage_name = "96_detached_fading_projection_calibration"
+            audits = {
+                "detached_fading_projection_audit":
+                    "detached_fading_projection_audit.csv",
+            }
+            summary_prefix = "detached_fading_projection"
+            calibrated_count_key = "events_removed_as_nonbiological"
+        elif calibration_name == "conserved-multi-anchor-projection":
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b3_issue015_conserved_multi_anchor_projection_calibration(
+                    labels, unclaimed, latent_points, events, members,
+                    cfg, work)
+            stage_name = "104_conserved_multi_anchor_projection_calibration"
+            audits = {
+                "conserved_multi_anchor_encounter_audit":
+                    "conserved_multi_anchor_encounter_audit.csv",
+            }
+            summary_prefix = "conserved_multi_anchor_projection"
+            calibrated_count_key = "events_removed"
+        elif calibration_name == "fragmented-subcellular-episode":
+            scored_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.read_csv(
+                work / "25_raw_physical_hypotheses/out"
+                / "frame_evidence_thresholds.csv")
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b3_issue018_fragmented_subcellular_episode_calibration(
+                    labels, unclaimed, scored_points, raw, thresholds,
+                    events, members, cfg, work)
+            stage_name = "108_fragmented_subcellular_episode_calibration"
+            audits = {
+                "fragmented_subcellular_episode_audit":
+                    "fragmented_subcellular_episode_audit.csv",
+            }
+            summary_prefix = "fragmented_subcellular_episode"
+            calibrated_count_key = "events_calibrated_nonbiological"
+        elif calibration_name == "ownerless-reference-handoff":
+            scored_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.read_csv(
+                work / "25_raw_physical_hypotheses/out"
+                / "frame_evidence_thresholds.csv")
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b3_issue022_ownerless_reference_handoff_calibration(
+                    labels, unclaimed, scored_points, raw, thresholds,
+                    events, members, cfg, work)
+            stage_name = "112_ownerless_reference_handoff_calibration"
+            audits = {
+                "ownerless_reference_handoff_audit":
+                    "ownerless_reference_handoff_audit.csv",
+            }
+            summary_prefix = "ownerless_reference_handoff"
+            calibrated_count_key = "events_calibrated_nonbiological"
+        elif calibration_name == "short-owned-companion":
+            candidate, candidate_unclaimed, calibrated, calibrated_members, \
+                audit, metrics = \
+                _well_b2_issue008_short_owned_companion_projection_calibration(
+                    labels, unclaimed, latent_points, events, members, cfg, work)
+            stage_name = "79_short_owned_companion_projection_calibration"
+            audits = {
+                "short_owned_companion_audit":
+                    "short_owned_companion_audit.csv",
+            }
+            summary_prefix = "short_owned_companion"
+            calibrated_count_key = "events_calibrated_non_disruptive"
+        else:
+            raise ValueError(
+                "unsupported accepted event calibration: "
+                f"{calibration_name!r}")
+        if not np.array_equal(candidate, labels):
+            raise AssertionError(
+                "accepted event-calibration tail changed labels")
         if not np.array_equal(candidate_unclaimed, unclaimed):
             raise AssertionError(
-                "accepted isolated-pair tail changed the unclaimed ledger")
-        checkpoint = (
-            work / "44_well_issue001_isolated_pair_encounter_recovery.tif")
-        save_stack(checkpoint, candidate, cfg.values["frame_interval_min"])
-        checkpoint_unclaimed = work / (
-            "44_well_issue001_isolated_pair_encounter_recovery_unclaimed.tif")
-        shutil.copyfile(parent_unclaimed_path, checkpoint_unclaimed)
-        _save_final_labels(work / f"{stem}.tif", candidate)
-        shutil.copyfile(
-            parent_unclaimed_path,
-            work / f"{stem}_unclaimed_original_ids.tif")
+                "accepted event-calibration tail changed unclaimed data")
 
-        delta = candidate != labels
-        parent_inferred_path = (
-            parent / "mid" / f"{stem}_inferred_accepted_history.tif")
-        inferred = (load_stack(parent_inferred_path).astype(bool) | delta)
-        frame_table, tracks = _identity_tables(candidate, raw, inferred)
         outputs = {
             "labels": run.dir / "out" / f"{stem}.tif",
             "unclaimed": run.dir / "out" /
@@ -1727,46 +2025,50 @@ def run_accepted_tail(run_name: str, parent_run: str, stem: str,
             "tracks": run.dir / "out" / "tracks.csv",
             "history_summary": run.dir / "out" /
                 "accepted_history_summary.json",
+            "events": run.dir / "out" / "candidate_disruptive_events.csv",
+            "event_members": run.dir / "out" / "candidate_event_members.csv",
         }
-        shutil.copyfile(work / f"{stem}.tif", outputs["labels"])
+        for output_key, filename in audits.items():
+            outputs[output_key] = run.dir / "out" / filename
+        shutil.copyfile(parent_labels_path, outputs["labels"])
         shutil.copyfile(parent_unclaimed_path, outputs["unclaimed"])
-        save_stack(outputs["inferred"], inferred.astype(np.uint8),
-                   cfg.values["frame_interval_min"])
-        frame_table.to_csv(outputs["frame_identities"], index=False)
-        tracks.to_csv(outputs["tracks"], index=False)
+        shutil.copyfile(
+            parent / "mid" / f"{stem}_inferred_accepted_history.tif",
+            outputs["inferred"])
+        shutil.copyfile(parent / "out/frame_identities.csv",
+                        outputs["frame_identities"])
+        shutil.copyfile(parent / "out/tracks.csv", outputs["tracks"])
+        stage = work / stage_name / "out"
+        shutil.copyfile(stage / "candidate_disruptive_events.csv",
+                        outputs["events"])
+        shutil.copyfile(stage / "candidate_event_members.csv",
+                        outputs["event_members"])
+        for output_key, filename in audits.items():
+            shutil.copyfile(stage / filename, outputs[output_key])
         parent_provenance = parent / "out" / f"{stem}_provenance.tif"
         if parent_provenance.is_file():
-            provenance = load_stack(parent_provenance).astype(np.uint8)
-            provenance[delta] |= PROVENANCE_INFERRED
             outputs["provenance"] = (
                 run.dir / "out" / f"{stem}_provenance.tif")
-            save_stack(outputs["provenance"], provenance,
-                       cfg.values["frame_interval_min"])
+            shutil.copyfile(parent_provenance, outputs["provenance"])
         summary = dict(parent_manifest.get("summary", {}))
         summary.update({
             "accepted_tail_parent": parent_run,
-            "isolated_pair_recovery_audit_rows": int(len(audit)),
-            "isolated_pair_recovery_applied_proposals": int(
-                metrics["applied_proposals"]),
-            "isolated_pair_recovery_applied_track_pairs": int(
-                metrics["applied_track_pairs"]),
-            "isolated_pair_recovery_changed_pixels": int(
-                metrics["changed_pixels"]),
-            "isolated_pair_recovery_changed_frames": int(
-                metrics["changed_frames"]),
-            "isolated_pair_recovery_absorbed_coreless_pixels": int(
-                metrics["absorbed_coreless_pixels"]),
-            "isolated_pair_recovery_reverted_duplicate_proposals": int(
-                metrics["reverted_duplicate_proposals"]),
-            "isolated_pair_recovery_reverted_crowded_proposals": int(
-                metrics["reverted_crowded_proposals"]),
-            "isolated_pair_recovery_identity_targets": 0,
-            "isolated_pair_recovery_track_targets": 0,
-            "isolated_pair_recovery_frame_targets": 0,
-            "isolated_pair_recovery_coordinate_targets": 0,
-            "isolated_pair_recovery_event_targets": 0,
-            "isolated_pair_recovery_region_targets": 0,
-            "isolated_pair_recovery_review_case_targets": 0,
+            f"{summary_prefix}_events_audited": int(
+                metrics["events_audited"]),
+            f"{summary_prefix}_{calibrated_count_key}": int(
+                metrics[calibrated_count_key]),
+            f"{summary_prefix}_event_catalogue_sha256": str(
+                metrics["event_catalogue_sha256"]),
+            "event_catalogue_sha256": str(metrics["event_catalogue_sha256"]),
+            "events_sha256": str(metrics["event_catalogue_sha256"]),
+            f"{summary_prefix}_identity_targets": 0,
+            f"{summary_prefix}_owner_targets": 0,
+            f"{summary_prefix}_track_targets": 0,
+            f"{summary_prefix}_frame_targets": 0,
+            f"{summary_prefix}_coordinate_targets": 0,
+            f"{summary_prefix}_event_targets": 0,
+            f"{summary_prefix}_region_targets": 0,
+            f"{summary_prefix}_review_case_targets": 0,
         })
         write_json(outputs["history_summary"], summary)
         for label, path in outputs.items():
@@ -1779,11 +2081,1187 @@ def run_accepted_tail(run_name: str, parent_run: str, stem: str,
                 (candidate > 0) & (candidate_unclaimed > 0))),
             "labels_sha256": sha256(outputs["labels"]),
             "unclaimed_sha256": sha256(outputs["unclaimed"]),
+            "events_sha256": sha256(outputs["events"]),
         })
     except BaseException as error:
         run.fail(error)
         raise
     print(f"DONE {stem} {run_name}: accepted tail appended to "
+          f"m22_accepted_history/{parent_run}")
+
+
+def _link_or_copy_file(source: str, destination: str) -> str:
+    """Hardlink immutable history files, with a cross-volume copy fallback."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+    return destination
+
+
+def _clone_accepted_history(source: Path, destination: Path) -> None:
+    """Clone an immutable accepted tree without duplicating file contents."""
+    shutil.copytree(
+        source, destination, dirs_exist_ok=True,
+        copy_function=_link_or_copy_file)
+
+
+def run_accepted_label_tail(run_name: str, parent_run: str, stem: str,
+                            config_path: Path | None = None,
+                            events_path: Path | None = None,
+                            event_members_path: Path | None = None,
+                            calibration_name: str = "ownerless-cohort-gap",
+                            calibration_points_path: Path | None = None,
+                            ) -> None:
+    """Append an accepted label-changing stage to an immutable parent.
+
+    Event inputs must be the freshly scored and calibrated catalogue produced
+    from the new labels. They are packaged byte-for-byte rather than rescored.
+    """
+    cfg = Config.load(config_path)
+    destination = ROOT / "m22_accepted_history" / run_name
+    if destination.exists():
+        raise FileExistsError(
+            f"immutable accepted run already exists: {destination}")
+    registered_raw = ROOT / "registered inputs" / f"{stem}.tif"
+    if not registered_raw.is_file():
+        raise FileNotFoundError(
+            f"accepted-label-tail raw input is missing: {registered_raw}")
+    parent = ROOT / "m22_accepted_history" / parent_run
+    parent_manifest_path = parent / "run.json"
+    parent_work = parent / "mid/accepted_history"
+    if not parent_manifest_path.is_file() or not parent_work.is_dir():
+        raise FileNotFoundError(f"accepted parent is incomplete: {parent}")
+    parent_manifest = read_json(parent_manifest_path)
+    if parent_manifest.get("status") != "done":
+        raise RuntimeError(f"accepted parent is not done: {parent_run}")
+    if events_path is None or event_members_path is None:
+        raise ValueError(
+            "accepted label tail requires fresh --accepted-tail-events and "
+            "--accepted-tail-event-members")
+    events_path = Path(events_path).resolve()
+    event_members_path = Path(event_members_path).resolve()
+    if not events_path.is_file() or not event_members_path.is_file():
+        raise FileNotFoundError(
+            "accepted label-tail event evidence is missing: "
+            f"{events_path}, {event_members_path}")
+    if calibration_name in {
+            "bracketed-ownerless-seat-with-fragmented-encounter",
+            "established-seat-cycle-recovery",
+            "dormant-seat-successor-recovery",
+            "staggered-fusion-exchange-recovery",
+            "large-persistent-reference-relay",
+            "dormant-owner-reciprocal-partition",
+                "conservative-episode-ownership",
+                "original-body-continuity"}:
+        if calibration_points_path is None:
+            raise ValueError(
+                "this accepted label repair requires the current physical "
+                "--accepted-tail-points table")
+        calibration_points_path = Path(calibration_points_path).resolve()
+        if not calibration_points_path.is_file():
+            raise FileNotFoundError(
+                "accepted label-tail scored point evidence is missing: "
+                f"{calibration_points_path}")
+
+    run = Run("m22_accepted_history", run_name, {
+        "stem": stem, "source_frame_offset": 2,
+        "targeting_mode": "field_wide_discovery",
+        "identity_target_count": 0, "owner_target_count": 0,
+        "track_target_count": 0, "frame_target_count": 0,
+        "coordinate_target_count": 0, "event_target_count": 0,
+        "region_target_count": 0, "review_case_target_count": 0,
+        "source_run": parent_run, "accepted_tail_parent": parent_run,
+        "events_source_sha256": sha256(events_path),
+        "event_members_source_sha256": sha256(event_members_path),
+        "accepted_tail_calibration": calibration_name,
+        "accepted_tail_points_sha256": (
+            sha256(calibration_points_path)
+            if calibration_points_path is not None else None),
+    }, upstream=f"m22_accepted_history/{parent_run}")
+    try:
+        work = run.dir / "mid/accepted_history"
+        _clone_accepted_history(parent_work, work)
+        parent_labels_path = parent / "out" / f"{stem}.tif"
+        parent_unclaimed_path = (
+            parent / "out" / f"{stem}_unclaimed_original_ids.tif")
+        labels = load_stack(parent_labels_path)
+        unclaimed = load_stack(parent_unclaimed_path)
+        raw_full = load_stack(registered_raw)
+        raw = (raw_full if raw_full.shape == labels.shape
+               else raw_full[2:2 + len(labels)])
+        if raw.shape != labels.shape:
+            raise ValueError(
+                f"accepted label-tail raw shape {raw.shape} does not match "
+                f"labels {labels.shape}")
+        packaged_events_path = events_path
+        packaged_event_members_path = event_members_path
+        if calibration_name == "persistent-single-owner-flash":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue008_persistent_single_owner_flash(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "persistent_single_owner_flash"
+            applied_count_key = "applied_proposals"
+            stage = work / "95_persistent_single_owner_flash/out"
+            evidence_files = {
+                "persistent_single_owner_flash_audit":
+                    stage / "persistent_single_owner_flash_audit.csv",
+                "persistent_single_owner_flash_applications":
+                    stage / "persistent_single_owner_flash_applications.csv",
+                "persistent_single_owner_flash_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "medium-window-persistent-owner-flash":
+            intermediate, intermediate_unclaimed, persistent_audit, \
+                persistent_applications, persistent_metrics = \
+                _well_b3_issue008_persistent_single_owner_flash(
+                    labels, unclaimed, raw, cfg, work)
+            candidate, candidate_unclaimed, audit, applications, \
+                delayed_base_audit, metrics = \
+                _well_b3_issue012_delayed_owner_projection_flash(
+                    intermediate, intermediate_unclaimed, raw, cfg, work)
+            summary_prefix = "issue012_medium_window_persistent_flash"
+            applied_count_key = "applied_proposals"
+            persistent_stage = work / "95_persistent_single_owner_flash/out"
+            delayed_stage = work / "97_delayed_owner_projection_flash/out"
+            evidence_files = {
+                "persistent_single_owner_flash_audit":
+                    persistent_stage / "persistent_single_owner_flash_audit.csv",
+                "persistent_single_owner_flash_applications":
+                    persistent_stage /
+                    "persistent_single_owner_flash_applications.csv",
+                "persistent_single_owner_flash_metrics":
+                    persistent_stage / "producer_metrics.json",
+                "delayed_owner_projection_flash_audit":
+                    delayed_stage / "delayed_owner_projection_flash_audit.csv",
+                "delayed_owner_projection_flash_applications":
+                    delayed_stage /
+                    "delayed_owner_projection_flash_applications.csv",
+                "delayed_owner_projection_flash_base_audit":
+                    delayed_stage / "medium_window_base_audit.csv",
+                "delayed_owner_projection_flash_metrics":
+                    delayed_stage / "producer_metrics.json",
+            }
+        elif calibration_name == "anchored-projection-owner-relay":
+            relay_labels, relay_unclaimed, relay_audit, relay_applications, \
+                relay_metrics = \
+                _well_b3_issue013_anchored_projection_owner_relay(
+                    labels, unclaimed, raw, cfg, work)
+            retired_labels, retired_unclaimed, retirement_audit, \
+                retirement_applications, retirement_metrics = \
+                _well_b3_issue013_ephemeral_speckle_alias_retirement(
+                    relay_labels, relay_unclaimed, cfg, work)
+            candidate, candidate_unclaimed, raw_gap_audit, raw_gap_metrics = \
+                _well_b3_issue013_anchored_projection_raw_gap_completion(
+                    retired_labels, retired_unclaimed, raw,
+                    relay_audit, relay_applications, cfg, work)
+            _, _, _, retirement_persistence_metrics = \
+                retirement_aware_persistence_integration.run(
+                    labels, candidate, retirement_audit,
+                    retirement_applications, work)
+            audit = raw_gap_audit
+            applications = retirement_applications
+            metrics = raw_gap_metrics
+            summary_prefix = "issue013_anchored_projection_owner_relay"
+            applied_count_key = "applied_proposals"
+            relay_stage = work / "99_anchored_projection_owner_relay/out"
+            retirement_stage = (
+                work / "100_ephemeral_speckle_alias_retirement/out")
+            raw_gap_stage = (
+                work / "101_anchored_projection_raw_gap_completion/out")
+            persistence_stage = work / "102_retirement_aware_persistence/out"
+            evidence_files = {
+                "anchored_projection_owner_relay_audit":
+                    relay_stage / "anchored_projection_owner_relay_audit.csv",
+                "anchored_projection_owner_relay_applications":
+                    relay_stage /
+                    "anchored_projection_owner_relay_applications.csv",
+                "anchored_projection_owner_relay_metrics":
+                    relay_stage / "producer_metrics.json",
+                "ephemeral_speckle_alias_retirement_audit":
+                    retirement_stage /
+                    "ephemeral_speckle_alias_retirement_audit.csv",
+                "ephemeral_speckle_alias_retirement_applications":
+                    retirement_stage /
+                    "ephemeral_speckle_alias_retirement_applications.csv",
+                "ephemeral_speckle_alias_retirement_metrics":
+                    retirement_stage / "producer_metrics.json",
+                "anchored_projection_raw_gap_completion_audit":
+                    raw_gap_stage /
+                    "anchored_projection_raw_gap_completion_audit.csv",
+                "anchored_projection_raw_gap_completion_metrics":
+                    raw_gap_stage / "producer_metrics.json",
+                "retirement_aware_persistence_metrics":
+                    persistence_stage / "producer_metrics.json",
+                "retirement_aware_persistence_comparison":
+                    persistence_stage /
+                    "surviving_identity_confidence_comparison.csv",
+            }
+        elif calibration_name == "terminal-projection-chain-completion":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue014_terminal_projection_chain_completion(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "terminal_projection_chain"
+            applied_count_key = "applied_proposals"
+            stage = work / "103_terminal_projection_chain_completion/out"
+            evidence_files = {
+                "terminal_projection_chain_audit":
+                    stage / "terminal_projection_chain_audit.csv",
+                "terminal_projection_chain_applications":
+                    stage / "terminal_projection_chain_applications.csv",
+                "terminal_projection_chain_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "body-scale-ownerless-allocation":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue016_body_scale_ownerless_allocation(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "body_scale_ownerless"
+            applied_count_key = "applied_proposals"
+            stage = work / "105_body_scale_ownerless_allocation/out"
+            evidence_files = {
+                "body_scale_ownerless_audit":
+                    stage / "body_scale_ownerless_audit.csv",
+                "body_scale_ownerless_applications":
+                    stage / "body_scale_ownerless_applications.csv",
+                "body_scale_ownerless_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "terminal-boundary-vanished-seat-partition":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue017_terminal_boundary_vanished_seat(
+                    labels, unclaimed, raw, cfg, work)
+            stage = work / "106_terminal_boundary_vanished_seat_partition/out"
+            baseline_events = pd.read_csv(events_path)
+            baseline_members = pd.read_csv(event_members_path)
+            _, _, calibrated_events, calibrated_members, \
+                terminal_event_audit, terminal_event_metrics = \
+                _well_b3_issue017_terminal_boundary_event_calibration(
+                    candidate, candidate_unclaimed,
+                    baseline_events, baseline_members, audit, applications,
+                    cfg, work)
+            calibration_stage = work / "107_terminal_boundary_event_calibration/out"
+            packaged_events_path = (
+                calibration_stage / "candidate_disruptive_events.csv")
+            packaged_event_members_path = (
+                calibration_stage / "candidate_event_members.csv")
+            summary_prefix = "terminal_boundary_seat"
+            applied_count_key = "applied_proposals"
+            evidence_files = {
+                "terminal_boundary_seat_audit":
+                    stage / "terminal_boundary_seat_audit.csv",
+                "terminal_boundary_seat_frames":
+                    stage / "terminal_boundary_seat_frames.csv",
+                "terminal_boundary_seat_metrics":
+                    stage / "producer_metrics.json",
+                "terminal_boundary_event_calibration_audit":
+                    calibration_stage /
+                    "terminal_boundary_event_calibration_audit.csv",
+            }
+        elif calibration_name == \
+                "bracketed-ownerless-seat-with-fragmented-encounter":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue019_bracketed_ownerless_seat_completion(
+                    labels, unclaimed, raw, cfg, work)
+            score_points = pd.read_csv(calibration_points_path)
+            baseline_events = pd.read_csv(events_path)
+            baseline_members = pd.read_csv(event_members_path)
+            _, _, calibrated_events, calibrated_members, \
+                lineage_audit, lineage_applications, lineage_metrics = \
+                _well_b3_issue020_fragmented_encounter_lineage_calibration(
+                    candidate, candidate_unclaimed, score_points,
+                    baseline_events, baseline_members, cfg, work)
+            stage = work / "109_bracketed_ownerless_seat_completion/out"
+            calibration_stage = (
+                work / "110_fragmented_encounter_lineage_calibration/out")
+            packaged_events_path = (
+                calibration_stage / "candidate_disruptive_events.csv")
+            packaged_event_members_path = (
+                calibration_stage / "candidate_event_members.csv")
+            summary_prefix = "bracketed_ownerless_seat"
+            applied_count_key = "eligible_gaps"
+            evidence_files = {
+                "bracketed_ownerless_seat_audit":
+                    stage / "bracketed_ownerless_seat_audit.csv",
+                "bracketed_ownerless_seat_frames":
+                    stage / "bracketed_ownerless_seat_frames.csv",
+                "bracketed_ownerless_seat_metrics":
+                    stage / "producer_metrics.json",
+                "fragmented_encounter_lineage_audit":
+                    calibration_stage /
+                    "fragmented_encounter_lineage_audit.csv",
+                "fragmented_encounter_lineage_applications":
+                    calibration_stage /
+                    "fragmented_encounter_lineage_applications.csv",
+                "fragmented_encounter_lineage_metrics":
+                    calibration_stage / "producer_metrics.json",
+            }
+        elif calibration_name == "temporal-core-path-lineage":
+            # Discovery must use the accepted parent's fresh catalogue.  The
+            # post-repair catalogue supplied on the CLI is packaged exactly as
+            # the reviewed scorer output, but cannot be used to discover the
+            # repair that produced it.
+            parent_events_path = (
+                parent / "out/candidate_disruptive_events.csv")
+            if not parent_events_path.is_file():
+                raise FileNotFoundError(
+                    "temporal core-path lineage requires the accepted "
+                    f"parent catalogue: {parent_events_path}")
+            parent_events = pd.read_csv(parent_events_path)
+            candidate, candidate_unclaimed, audit, applications, \
+                frame_audit, metrics = \
+                _well_b3_issue021_temporal_core_path_lineage(
+                    labels, unclaimed, raw, parent_events, cfg, work)
+            summary_prefix = "temporal_core_path_lineage"
+            applied_count_key = "applied_proposals"
+            stage = work / "111_temporal_core_path_lineage/out"
+            evidence_files = {
+                "temporal_core_path_lineage_audit":
+                    stage / "temporal_core_path_lineage_audit.csv",
+                "temporal_core_path_lineage_applications":
+                    stage / "temporal_core_path_lineage_applications.csv",
+                "temporal_core_path_frame_audit":
+                    stage / "temporal_core_path_frame_audit.csv",
+                "temporal_core_path_lineage_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "asymmetric-fusion-area-flip-recovery":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue023_asymmetric_fusion_area_flip_recovery(
+                    labels, unclaimed, cfg, work)
+            summary_prefix = "asymmetric_fusion_area_flip"
+            applied_count_key = "applied_proposals"
+            stage = work / "113_asymmetric_fusion_area_flip_recovery/out"
+            evidence_files = {
+                "fusion_area_flip_audit":
+                    stage / "fusion_area_flip_audit.csv",
+                "fusion_area_flip_frames":
+                    stage / "fusion_area_flip_frames.csv",
+                "fusion_area_flip_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "recurrent-dominant-body-relay":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue024_recurrent_dominant_body_relay(
+                    labels, unclaimed, cfg, work)
+            summary_prefix = "recurrent_dominant_body_relay"
+            applied_count_key = "applied_proposals"
+            stage = work / "114_recurrent_dominant_body_relay/out"
+            evidence_files = {
+                "recurrent_dominant_body_relay_audit":
+                    stage / "recurrent_dominant_body_relay_audit.csv",
+                "recurrent_dominant_body_relay_frames":
+                    stage / "recurrent_dominant_body_relay_frames.csv",
+                "recurrent_dominant_body_relay_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "established-seat-cycle-recovery":
+            score_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.DataFrame([
+                raw_physical_hypotheses.detect_frame(frame, index, {})[1]
+                for index, frame in enumerate(raw)
+            ])
+            candidate, candidate_unclaimed, audit, seats, applications, \
+                metrics = _well_b3_issue025_established_seat_cycle_recovery(
+                    labels, unclaimed, raw, score_points, thresholds,
+                    cfg, work)
+            summary_prefix = "established_seat_cycle"
+            applied_count_key = "applied"
+            stage = work / "115_established_seat_cycle_recovery/out"
+            evidence_files = {
+                "established_seat_cycle_audit":
+                    stage / "established_seat_cycle_audit.csv",
+                "established_seat_cycle_members":
+                    stage / "established_seat_cycle_members.csv",
+                "established_seat_cycle_frames":
+                    stage / "established_seat_cycle_frames.csv",
+                "established_seat_cycle_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "dormant-seat-successor-recovery":
+            score_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.DataFrame([
+                raw_physical_hypotheses.detect_frame(frame, index, {})[1]
+                for index, frame in enumerate(raw)
+            ])
+            candidate, candidate_unclaimed, audit, members, applications, \
+                projection_proof, metrics = \
+                _well_b3_issue026_dormant_seat_successor_recovery(
+                    labels, unclaimed, raw, score_points, thresholds,
+                    cfg, work)
+            summary_prefix = "dormant_seat_successor"
+            applied_count_key = "applied"
+            stage = work / "116_dormant_seat_successor_recovery/out"
+            evidence_files = {
+                "dormant_seat_successor_audit":
+                    stage / "dormant_seat_successor_audit.csv",
+                "dormant_seat_successor_members":
+                    stage / "dormant_seat_successor_members.csv",
+                "dormant_seat_successor_frames":
+                    stage / "dormant_seat_successor_frames.csv",
+                "dormant_seat_successor_projection_proof":
+                    stage / "projection_host_proof.csv",
+                "dormant_seat_successor_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "staggered-fusion-exchange-recovery":
+            score_points = pd.read_csv(calibration_points_path)
+            thresholds = pd.DataFrame([
+                raw_physical_hypotheses.detect_frame(frame, index, {})[1]
+                for index, frame in enumerate(raw)
+            ])
+            candidate, candidate_unclaimed, audit, applications, \
+                projection_proof, metrics = \
+                _well_b3_issue027_staggered_fusion_exchange_recovery(
+                    labels, unclaimed, raw, score_points, thresholds,
+                    cfg, work)
+            summary_prefix = "staggered_fusion_exchange"
+            applied_count_key = "applied_pairs"
+            stage = work / "117_staggered_fusion_exchange_recovery/out"
+            evidence_files = {
+                "staggered_fusion_exchange_audit":
+                    stage / "staggered_fusion_exchange_audit.csv",
+                "staggered_fusion_exchange_frames":
+                    stage / "staggered_fusion_exchange_frames.csv",
+                "staggered_fusion_exchange_projection_proof":
+                    stage / "staggered_fusion_exchange_projection_proof.csv",
+                "staggered_fusion_exchange_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "large-persistent-reference-relay":
+            score_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b4_issue001_large_persistent_reference_relay(
+                    labels, unclaimed, raw, score_points, cfg, work)
+            summary_prefix = "large_persistent_reference_relay"
+            applied_count_key = "applied_large_references"
+            stage = work / "118_large_persistent_reference_relay/out"
+            evidence_files = {
+                "large_persistent_reference_relay_audit":
+                    stage / "large_persistent_reference_relay_audit.csv",
+                "large_persistent_reference_relay_frames":
+                    stage / "large_persistent_reference_relay_frames.csv",
+                "large_persistent_reference_relay_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "conservative-episode-ownership":
+            score_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, audit, applications, allocations, metrics = \
+                _well_b4_issue003_conservative_episode_ownership(
+                    labels, unclaimed, raw, score_points, cfg, work)
+            summary_prefix = "conservative_episode_ownership"
+            applied_count_key = "applied_proposals"
+            stage = work / "120_conservative_episode_ownership/out"
+            evidence_files = {
+                "conservative_episode_discovery": stage / "discovery_audit.csv",
+                "conservative_episode_frames": stage / "episode_frames.csv",
+                "conservative_episode_allocations": stage / "displaced_body_allocations.csv",
+                "conservative_episode_metrics": stage / "producer_metrics.json",
+            }
+        elif calibration_name == "original-body-continuity":
+            score_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, audit, applications, transfers, metrics = \
+                _well_b4_issue004_original_body_continuity(
+                    labels, unclaimed, raw, score_points, cfg, work)
+            summary_prefix = "original_body_continuity"
+            applied_count_key = "applied_proposals"
+            stage = work / "121_original_body_continuity/out"
+            evidence_files = {
+                "original_body_discovery": stage / "discovery_audit.csv",
+                "original_body_frames": stage / "episode_frames.csv",
+                "original_body_transfers": stage / "component_transfers.csv",
+                "original_body_metrics": stage / "producer_metrics.json",
+            }
+        elif calibration_name == "dormant-owner-reciprocal-partition":
+            score_points = pd.read_csv(calibration_points_path)
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b4_issue002_dormant_owner_reciprocal_partition(
+                    labels, unclaimed, raw, score_points, cfg, work)
+            summary_prefix = "dormant_owner_reciprocal_partition"
+            applied_count_key = "applied_takeovers"
+            stage = work / "119_dormant_owner_reciprocal_partition/out"
+            evidence_files = {
+                "dormant_owner_reciprocal_partition_audit":
+                    stage / "reciprocal_separable_partition_audit.csv",
+                "dormant_owner_reciprocal_partition_applications":
+                    stage / "reciprocal_separable_partition_applications.csv",
+                "dormant_owner_reciprocal_partition_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "right-censored-reciprocal-exchange":
+            candidate, candidate_unclaimed, audit, metrics = \
+                _well_b3_issue007_right_censored_reciprocal_exchange(
+                    labels, unclaimed, cfg, work)
+            applications = pd.DataFrame()
+            summary_prefix = "right_censored_reciprocal_exchange"
+            applied_count_key = "applied_exchanges"
+            stage = work / "94_right_censored_reciprocal_exchange/out"
+            evidence_files = {
+                "right_censored_reciprocal_exchange_audit":
+                    stage / "right_censored_reciprocal_exchange_audit.csv",
+                "right_censored_reciprocal_exchange_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "right-censored-seat-partition":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue006_right_censored_seat_partition(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "right_censored_seat_partition"
+            applied_count_key = "applied_transitions"
+            stage = work / "93_right_censored_seat_partition/out"
+            evidence_files = {
+                "right_censored_seat_partition_audit":
+                    stage / "right_censored_seat_partition_audit.csv",
+                "right_censored_seat_partition_frames":
+                    stage / "right_censored_seat_partition_frames.csv",
+                "right_censored_seat_partition_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "component-continuity-duplicate-takeover":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue005_component_continuity_duplicate_takeover(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "component_continuity_takeover"
+            applied_count_key = "applied_takeovers"
+            stage = work / "92_component_continuity_duplicate_takeover/out"
+            evidence_files = {
+                "component_continuity_takeover_audit":
+                    stage / "component_continuity_takeover_audit.csv",
+                "component_continuity_takeover_applications":
+                    stage / "component_continuity_takeover_applications.csv",
+                "component_continuity_takeover_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "reconnected-companion-merge-partition":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b3_issue004_reconnected_companion_merge_partition(
+                    labels, unclaimed, cfg, work)
+            summary_prefix = "reconnected_companion_partition"
+            applied_count_key = "applied_partitions"
+            stage = work / "91_reconnected_companion_merge_partition/out"
+            evidence_files = {
+                "reconnected_companion_merge_audit":
+                    stage / "reconnected_companion_merge_audit.csv",
+                "reconnected_companion_merge_applications":
+                    stage / "reconnected_companion_merge_applications.csv",
+                "reconnected_companion_merge_metrics":
+                    stage / "producer_metrics.json",
+            }
+        elif calibration_name == "recording-start-two-seat":
+            candidate, candidate_unclaimed, audit, applications, metrics = \
+                _well_b2_issue018_recording_start_two_seat_inheritance(
+                    labels, unclaimed, raw, cfg, work)
+            summary_prefix = "recording_start_two_seat"
+            applied_count_key = "applied_proposals"
+            stage = work / "87_recording_start_two_seat_inheritance/out"
+            evidence_files = {
+                "recording_start_two_seat_audit":
+                    stage / "recording_start_two_seat_audit.csv",
+                "recording_start_two_seat_applications":
+                    stage / "recording_start_two_seat_applications.csv",
+                "recording_start_two_seat_metrics":
+                    stage / "producer_metrics.json",
+            }
+        else:
+            candidate, candidate_unclaimed, audit, metrics = \
+                _well_b2_issue009_ownerless_cohort_latent_gap_completion(
+                    labels, unclaimed, raw, cfg, work)
+            applications = pd.DataFrame()
+            summary_prefix = "ownerless_cohort_gap"
+            applied_count_key = "applied_proposals"
+            stage = work / "80_ownerless_cohort_latent_gap_completion/out"
+            evidence_files = {
+                "ownerless_cohort_gap_audit":
+                    stage / "ownerless_cohort_latent_gap_audit.csv",
+                "ownerless_cohort_gap_metrics":
+                    stage / "producer_metrics.json",
+            }
+        changed = candidate != labels
+        if not int(metrics.get(applied_count_key, 0)) or not np.any(changed):
+            raise AssertionError(
+                "accepted label tail did not apply the reviewed repair")
+
+        outputs = {
+            "labels": run.dir / "out" / f"{stem}.tif",
+            "unclaimed": run.dir / "out" /
+                f"{stem}_unclaimed_original_ids.tif",
+            "inferred": run.dir / "mid" /
+                f"{stem}_inferred_accepted_history.tif",
+            "frame_identities": run.dir / "out/frame_identities.csv",
+            "tracks": run.dir / "out/tracks.csv",
+            "history_summary": run.dir / "out/accepted_history_summary.json",
+            "events": run.dir / "out/candidate_disruptive_events.csv",
+            "event_members": run.dir / "out/candidate_event_members.csv",
+        }
+        for label, source in evidence_files.items():
+            outputs[label] = run.dir / "out" / source.name
+        if calibration_name == \
+                "bracketed-ownerless-seat-with-fragmented-encounter":
+            # Both independently reusable stages call their local metrics file
+            # producer_metrics.json. Keep distinct immutable evidence names in
+            # the accepted wrapper instead of silently overwriting one.
+            outputs["bracketed_ownerless_seat_metrics"] = (
+                run.dir / "out/bracketed_ownerless_seat_metrics.json")
+            outputs["fragmented_encounter_lineage_metrics"] = (
+                run.dir / "out/fragmented_encounter_lineage_metrics.json")
+        if calibration_name in {
+                "body-scale-ownerless-allocation",
+                "temporal-core-path-lineage",
+                "asymmetric-fusion-area-flip-recovery",
+                "recurrent-dominant-body-relay",
+                "established-seat-cycle-recovery",
+                "dormant-seat-successor-recovery",
+                "staggered-fusion-exchange-recovery",
+                "large-persistent-reference-relay",
+                "dormant-owner-reciprocal-partition",
+                "conservative-episode-ownership",
+                "original-body-continuity"}:
+            tifffile.imwrite(
+                outputs["labels"], candidate, imagej=True,
+                compression="zlib",
+                metadata={"axes": "TYX", "finterval": 1800.0,
+                          "tunit": "sec", "unit": "pixel"})
+        elif calibration_name == "terminal-boundary-vanished-seat-partition":
+            tifffile.imwrite(
+                outputs["labels"], candidate, imagej=True,
+                compression="zlib", metadata={"axes": "TYX"})
+        elif calibration_name in {
+                "recording-start-two-seat",
+                "medium-window-persistent-owner-flash",
+                "anchored-projection-owner-relay",
+                "terminal-projection-chain-completion",
+                "bracketed-ownerless-seat-with-fragmented-encounter"}:
+            # Preserve the reviewed producer's canonical TIFF encoding so the
+            # immutable accepted artifact is byte-identical to its oracle.
+            tifffile.imwrite(outputs["labels"], candidate, compression="zlib")
+        else:
+            _save_final_labels(outputs["labels"], candidate)
+        if calibration_name in {
+                "staggered-fusion-exchange-recovery",
+                "large-persistent-reference-relay",
+                "conservative-episode-ownership",
+                "original-body-continuity"}:
+            tifffile.imwrite(
+                outputs["unclaimed"], candidate_unclaimed, imagej=True,
+                compression="zlib",
+                metadata={"axes": "TYX", "finterval": 1800.0,
+                          "tunit": "sec", "unit": "pixel"})
+        else:
+            shutil.copyfile(parent_unclaimed_path, outputs["unclaimed"])
+        parent_inferred = load_stack(
+            parent / "mid" / f"{stem}_inferred_accepted_history.tif").astype(bool)
+        inferred = parent_inferred | changed
+        save_stack(outputs["inferred"], inferred.astype(np.uint8),
+                   cfg.values["frame_interval_min"])
+        frame_table, tracks = _identity_tables(candidate, raw, inferred)
+        frame_table.to_csv(outputs["frame_identities"], index=False)
+        tracks.to_csv(outputs["tracks"], index=False)
+        shutil.copyfile(packaged_events_path, outputs["events"])
+        shutil.copyfile(packaged_event_members_path, outputs["event_members"])
+        for label, source in evidence_files.items():
+            shutil.copyfile(source, outputs[label])
+        parent_provenance = parent / "out" / f"{stem}_provenance.tif"
+        if parent_provenance.is_file():
+            provenance = load_stack(parent_provenance).astype(np.uint8)
+            provenance[changed] |= np.uint8(0b101)
+            outputs["provenance"] = run.dir / "out" / f"{stem}_provenance.tif"
+            save_stack(outputs["provenance"], provenance,
+                       cfg.values["frame_interval_min"])
+        summary = dict(parent_manifest.get("summary", {}))
+        stage_summary = {
+            "accepted_tail_parent": parent_run,
+            "active_identities": int(
+                len(set(map(int, np.unique(candidate))) - {0})),
+            "assigned_pixels": int(np.count_nonzero(candidate)),
+            "unclaimed_pixels": int(np.count_nonzero(candidate_unclaimed)),
+            f"{summary_prefix}_changed_pixels": (
+                int(changed.sum())
+                if calibration_name in {
+                    "medium-window-persistent-owner-flash",
+                    "anchored-projection-owner-relay",
+                    "terminal-projection-chain-completion",
+                    "body-scale-ownerless-allocation",
+                    "terminal-boundary-vanished-seat-partition",
+                    "bracketed-ownerless-seat-with-fragmented-encounter",
+                    "temporal-core-path-lineage",
+                    "asymmetric-fusion-area-flip-recovery",
+                    "recurrent-dominant-body-relay",
+                    "established-seat-cycle-recovery",
+                    "dormant-seat-successor-recovery",
+                    "staggered-fusion-exchange-recovery",
+                    "large-persistent-reference-relay",
+                    "dormant-owner-reciprocal-partition",
+                "conservative-episode-ownership",
+                "original-body-continuity"}
+                else int(metrics["changed_pixels"])),
+            f"{summary_prefix}_changed_frames": (
+                int(np.count_nonzero(
+                    changed.reshape(len(changed), -1).any(axis=1)))
+                if calibration_name in {
+                    "medium-window-persistent-owner-flash",
+                    "anchored-projection-owner-relay",
+                    "terminal-projection-chain-completion",
+                    "body-scale-ownerless-allocation",
+                    "terminal-boundary-vanished-seat-partition",
+                    "bracketed-ownerless-seat-with-fragmented-encounter",
+                    "temporal-core-path-lineage",
+                    "asymmetric-fusion-area-flip-recovery",
+                    "recurrent-dominant-body-relay",
+                    "established-seat-cycle-recovery",
+                    "dormant-seat-successor-recovery",
+                    "staggered-fusion-exchange-recovery",
+                    "large-persistent-reference-relay",
+                    "dormant-owner-reciprocal-partition",
+                "conservative-episode-ownership",
+                "original-body-continuity"}
+                else int(metrics["changed_frames"])),
+            "event_catalogue_sha256": sha256(outputs["events"]),
+        }
+        if calibration_name == "persistent-single-owner-flash":
+            stage_summary.update({
+                "persistent_single_owner_flash_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "persistent_single_owner_flash_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "persistent_single_owner_flash_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "persistent_single_owner_flash_application_rows": int(
+                    len(applications)),
+                "persistent_single_owner_flash_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "medium-window-persistent-owner-flash":
+            stage_summary.update({
+                "persistent_single_owner_flash_proposals_audited": int(
+                    persistent_metrics["proposals_audited"]),
+                "persistent_single_owner_flash_eligible_proposals": int(
+                    persistent_metrics["eligible_proposals"]),
+                "persistent_single_owner_flash_applied_proposals": int(
+                    persistent_metrics["applied_proposals"]),
+                "persistent_single_owner_flash_application_rows": int(
+                    len(persistent_applications)),
+                "persistent_single_owner_flash_changed_pixels": int(
+                    persistent_metrics["changed_pixels"]),
+                "persistent_single_owner_flash_changed_frames": int(
+                    persistent_metrics["changed_frames"]),
+                "persistent_single_owner_flash_new_duplicate_components": int(
+                    persistent_metrics["new_duplicate_components"]),
+                "delayed_owner_projection_flash_base_proposals_audited": int(
+                    len(delayed_base_audit)),
+                "delayed_owner_projection_flash_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "delayed_owner_projection_flash_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "delayed_owner_projection_flash_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "delayed_owner_projection_flash_application_rows": int(
+                    len(applications)),
+                "delayed_owner_projection_flash_changed_pixels": int(
+                    metrics["changed_pixels"]),
+                "delayed_owner_projection_flash_changed_frames": int(
+                    metrics["changed_frames"]),
+                "delayed_owner_projection_flash_explained_components": int(
+                    metrics["new_explained_projection_components"]),
+                "delayed_owner_projection_flash_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "anchored-projection-owner-relay":
+            stage_summary.update({
+                "anchored_projection_owner_relay_proposals_audited": int(
+                    relay_metrics["proposals_audited"]),
+                "anchored_projection_owner_relay_eligible_proposals": int(
+                    relay_metrics["eligible_proposals"]),
+                "anchored_projection_owner_relay_applied_proposals": int(
+                    relay_metrics["applied_proposals"]),
+                "anchored_projection_owner_relay_changed_pixels": int(
+                    relay_metrics["changed_pixels"]),
+                "anchored_projection_owner_relay_changed_frames": int(
+                    relay_metrics["changed_frames"]),
+                "anchored_projection_owner_relay_new_duplicate_components": int(
+                    relay_metrics["new_duplicate_components"]),
+                "ephemeral_alias_retirement_identities_audited": int(
+                    retirement_metrics["identities_audited"]),
+                "ephemeral_alias_retirement_eligible_proposals": int(
+                    retirement_metrics["eligible_proposals"]),
+                "ephemeral_alias_retirement_applied_proposals": int(
+                    retirement_metrics["applied_proposals"]),
+                "ephemeral_alias_retirement_changed_pixels": int(
+                    retirement_metrics["changed_pixels"]),
+                "ephemeral_alias_retirement_changed_frames": int(
+                    retirement_metrics["changed_frames"]),
+                "ephemeral_alias_retirement_removed_identity_count": int(
+                    retirement_metrics["removed_identity_count"]),
+                "ephemeral_alias_retirement_proof_exact": bool(
+                    retirement_metrics["retirement_proof_exact"]),
+                "anchored_projection_raw_gap_applied_proposals": int(
+                    raw_gap_metrics["applied_proposals"]),
+                "anchored_projection_raw_gap_changed_pixels": int(
+                    raw_gap_metrics["changed_pixels"]),
+                "anchored_projection_raw_gap_changed_frames": int(
+                    raw_gap_metrics["changed_frames"]),
+                "anchored_projection_raw_gap_zero_signal_additions": int(
+                    raw_gap_metrics["zero_signal_additions"]),
+                "retirement_aware_persistence": retirement_persistence_metrics,
+            })
+        elif calibration_name == "terminal-projection-chain-completion":
+            stage_summary.update({
+                "terminal_projection_chain_physical_tracks_audited": int(
+                    metrics["physical_tracks_audited"]),
+                "terminal_projection_chain_projection_parents_audited": int(
+                    metrics["projection_parents_audited"]),
+                "terminal_projection_chain_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "terminal_projection_chain_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "terminal_projection_chain_application_rows": int(
+                    len(applications)),
+                "terminal_projection_chain_explained_components": int(
+                    metrics["new_explained_projection_components"]),
+                "terminal_projection_chain_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "body-scale-ownerless-allocation":
+            stage_summary.update({
+                "body_scale_ownerless_tracks_audited": int(
+                    metrics["tracks_audited"]),
+                "body_scale_ownerless_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "body_scale_ownerless_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "body_scale_ownerless_application_rows": int(
+                    len(applications)),
+                "body_scale_ownerless_new_identity_count": int(
+                    metrics["new_identity_count"]),
+                "body_scale_ownerless_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "terminal-boundary-vanished-seat-partition":
+            stage_summary.update({
+                "terminal_boundary_seat_disappearances_audited": int(
+                    metrics["terminal_disappearances_audited"]),
+                "terminal_boundary_seat_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "terminal_boundary_seat_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "terminal_boundary_seat_frame_rows": int(len(applications)),
+                "terminal_boundary_seat_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+                "terminal_boundary_event_events_audited": int(
+                    terminal_event_metrics["events_audited"]),
+                "terminal_boundary_event_events_removed": int(
+                    terminal_event_metrics["events_removed"]),
+            })
+        elif calibration_name == \
+                "bracketed-ownerless-seat-with-fragmented-encounter":
+            stage_summary.update({
+                "bracketed_ownerless_seat_identity_gaps_audited": int(
+                    metrics["identity_gaps_audited"]),
+                "bracketed_ownerless_seat_eligible_gaps": int(
+                    metrics["eligible_gaps"]),
+                "bracketed_ownerless_seat_frame_rows": int(
+                    len(applications)),
+                "bracketed_ownerless_seat_new_identity_count": int(
+                    metrics["new_identity_count"]),
+                "bracketed_ownerless_seat_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+                "fragmented_encounter_event_pairs_audited": int(
+                    lineage_metrics["event_pairs_audited"]),
+                "fragmented_encounter_eligible_event_pairs": int(
+                    lineage_metrics["eligible_event_pairs"]),
+                "fragmented_encounter_applied_event_joins": int(
+                    lineage_metrics["applied_event_joins"]),
+            })
+        elif calibration_name == "temporal-core-path-lineage":
+            stage_summary.update({
+                "temporal_core_path_lineage_events_audited": int(
+                    metrics["events_audited"]),
+                "temporal_core_path_lineage_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "temporal_core_path_lineage_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "temporal_core_path_lineage_application_rows": int(
+                    len(applications)),
+                "temporal_core_path_lineage_new_identity_count": int(
+                    metrics["new_identity_count"]),
+                "temporal_core_path_lineage_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "asymmetric-fusion-area-flip-recovery":
+            stage_summary.update({
+                "asymmetric_fusion_area_flip_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "asymmetric_fusion_area_flip_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "asymmetric_fusion_area_flip_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "asymmetric_fusion_area_flip_fusion_restorations": int(
+                    metrics["applied_fusion_restorations"]),
+                "asymmetric_fusion_area_flip_area_flips": int(
+                    metrics["applied_area_flips"]),
+                "asymmetric_fusion_area_flip_frame_rows": int(
+                    len(applications)),
+                "asymmetric_fusion_area_flip_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "recurrent-dominant-body-relay":
+            stage_summary.update({
+                "recurrent_dominant_body_relay_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "recurrent_dominant_body_relay_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "recurrent_dominant_body_relay_applied_proposals": int(
+                    metrics["applied_proposals"]),
+                "recurrent_dominant_body_relay_closed_exchange_rejections":
+                    int(metrics["closed_exchange_rejections"]),
+                "recurrent_dominant_body_relay_frame_rows": int(
+                    len(applications)),
+                "recurrent_dominant_body_relay_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "established-seat-cycle-recovery":
+            stage_summary.update({
+                "established_seat_cycle_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "established_seat_cycle_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "established_seat_cycle_seat_members": int(
+                    metrics["seat_members"]),
+                "established_seat_cycle_applied": bool(metrics["applied"]),
+                "established_seat_cycle_frame_rows": int(len(applications)),
+                "established_seat_cycle_foreground_added_pixels": int(
+                    metrics["foreground_added_pixels"]),
+                "established_seat_cycle_component_excess_before": int(
+                    metrics["component_excess_before"]),
+                "established_seat_cycle_component_excess_after": int(
+                    metrics["component_excess_after"]),
+                "established_seat_cycle_duplicate_owner_frames_before": int(
+                    metrics["duplicate_owner_frames_before"]),
+                "established_seat_cycle_duplicate_owner_frames_after": int(
+                    metrics["duplicate_owner_frames_after"]),
+                "established_seat_cycle_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "dormant-seat-successor-recovery":
+            stage_summary.update({
+                "dormant_seat_successor_physical_tracks_audited": int(
+                    metrics["physical_tracks_audited"]),
+                "dormant_seat_successor_proposals_audited": int(
+                    metrics["proposals_audited"]),
+                "dormant_seat_successor_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "dormant_seat_successor_lineage_members": int(
+                    metrics["lineage_members"]),
+                "dormant_seat_successor_applied": bool(metrics["applied"]),
+                "dormant_seat_successor_frame_rows": int(len(applications)),
+                "dormant_seat_successor_projection_proof_rows": int(
+                    len(projection_proof)),
+                "dormant_seat_successor_foreground_added_pixels": int(
+                    metrics["foreground_added_pixels"]),
+                "dormant_seat_successor_removed_identity_count": int(
+                    metrics["removed_identity_count"]),
+                "dormant_seat_successor_retired_aliases": list(
+                    metrics["retired_successor_aliases"]),
+                "dormant_seat_successor_component_excess_before": int(
+                    metrics["component_excess_before"]),
+                "dormant_seat_successor_component_excess_after": int(
+                    metrics["component_excess_after"]),
+                "dormant_seat_successor_duplicate_owner_frames_before": int(
+                    metrics["duplicate_owner_frames_before"]),
+                "dormant_seat_successor_duplicate_owner_frames_after": int(
+                    metrics["duplicate_owner_frames_after"]),
+                "dormant_seat_successor_raw_new_duplicate_components": int(
+                    metrics["raw_new_duplicate_components"]),
+                "dormant_seat_successor_unexplained_new_duplicates": int(
+                    metrics["unexplained_new_duplicate_components"]),
+            })
+        elif calibration_name == "staggered-fusion-exchange-recovery":
+            stage_summary.update({
+                "staggered_fusion_exchange_physical_tracks_audited": int(
+                    metrics["physical_tracks_audited"]),
+                "staggered_fusion_exchange_pairs_audited": int(
+                    metrics["reciprocal_pairs_audited"]),
+                "staggered_fusion_exchange_eligible_pairs": int(
+                    metrics["eligible_pairs"]),
+                "staggered_fusion_exchange_applied_pairs": int(
+                    metrics["applied_pairs"]),
+                "staggered_fusion_exchange_frame_rows": int(
+                    len(applications)),
+                "staggered_fusion_exchange_unclaimed_reassigned_pixels": int(
+                    metrics["unclaimed_reassigned_pixels"]),
+                "staggered_fusion_exchange_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+                "staggered_fusion_exchange_projection_proof_rows": int(
+                    len(projection_proof)),
+                "staggered_fusion_exchange_unproved_new_duplicates": int(
+                    metrics["unproved_new_duplicate_components"]),
+            })
+        elif calibration_name == "large-persistent-reference-relay":
+            stage_summary.update({
+                "large_persistent_reference_relay_physical_tracks_audited":
+                    int(metrics["physical_tracks_audited"]),
+                "large_persistent_reference_relay_eligible_references":
+                    int(metrics["eligible_large_references"]),
+                "large_persistent_reference_relay_applied_references":
+                    int(metrics["applied_large_references"]),
+                "large_persistent_reference_relay_applied_runs":
+                    int(metrics["applied_runs"]),
+                "large_persistent_reference_relay_applied_frames":
+                    int(metrics["applied_frames"]),
+                "large_persistent_reference_relay_changed_unclaimed_pixels":
+                    int(metrics["changed_unclaimed_pixels"]),
+                "large_persistent_reference_relay_new_duplicate_components":
+                    int(metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "conservative-episode-ownership":
+            stage_summary.update({
+                "conservative_episode_applied_proposals": int(metrics["applied_proposals"]),
+                "conservative_episode_foreground_suppressed_pixels": int(metrics["suppressed_foreground_pixels"]),
+                "conservative_episode_foreground_added_pixels": int(metrics["added_foreground_pixels"]),
+                "conservative_episode_reclaimed_unclaimed_pixels": int(metrics["reclaimed_unclaimed_pixels"]),
+                "conservative_episode_new_duplicate_components": int(metrics["new_duplicate_components"]),
+                "conservative_episode_new_identities": metrics["new_identities"],
+            })
+        elif calibration_name == "original-body-continuity":
+            stage_summary.update({
+                "original_body_applied_proposals": int(metrics["applied_proposals"]),
+                "original_body_applied_frames": int(metrics["applied_frames"]),
+                "original_body_foreground_suppressed_pixels": int(metrics["suppressed_foreground_pixels"]),
+                "original_body_foreground_added_pixels": int(metrics["added_foreground_pixels"]),
+                "original_body_new_duplicate_components": int(metrics["new_duplicate_components"]),
+                "original_body_new_identities": metrics["new_identities"],
+            })
+        elif calibration_name == "dormant-owner-reciprocal-partition":
+            stage_summary.update({
+                "dormant_owner_partition_components_audited": int(
+                    metrics["components_audited"]),
+                "dormant_owner_partition_transitions_audited": int(
+                    metrics["owner_transitions_audited"]),
+                "dormant_owner_partition_eligible_takeovers": int(
+                    metrics["eligible_takeovers"]),
+                "dormant_owner_partition_applied_takeovers": int(
+                    metrics["applied_takeovers"]),
+                "dormant_owner_partition_reciprocal_partitions": int(
+                    metrics["reciprocal_partitions"]),
+                "dormant_owner_partition_reciprocal_pair_frames": int(
+                    metrics["reciprocal_pair_frames"]),
+                "dormant_owner_partition_application_rows": int(
+                    len(applications)),
+                "dormant_owner_partition_new_component_excess": int(
+                    metrics["new_component_excess"]),
+            })
+        elif calibration_name == "right-censored-reciprocal-exchange":
+            stage_summary.update({
+                "right_censored_reciprocal_exchange_pairs_audited": int(
+                    metrics["pairs_audited"]),
+                "right_censored_reciprocal_exchange_eligible_exchanges": int(
+                    metrics["eligible_exchanges"]),
+                "right_censored_reciprocal_exchange_applied_exchanges": int(
+                    metrics["applied_exchanges"]),
+                "right_censored_reciprocal_exchange_new_duplicate_components":
+                    int(metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "right-censored-seat-partition":
+            stage_summary.update({
+                "right_censored_seat_partition_transitions_audited": int(
+                    metrics["transitions_audited"]),
+                "right_censored_seat_partition_eligible_transitions": int(
+                    metrics["eligible_transitions"]),
+                "right_censored_seat_partition_applied_transitions": int(
+                    metrics["applied_transitions"]),
+                "right_censored_seat_partition_frame_rows": int(
+                    len(applications)),
+                "right_censored_seat_partition_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "component-continuity-duplicate-takeover":
+            stage_summary.update({
+                "component_continuity_takeover_transitions_audited": int(
+                    metrics["transitions_audited"]),
+                "component_continuity_takeover_eligible_takeovers": int(
+                    metrics["eligible_takeovers"]),
+                "component_continuity_takeover_applied_takeovers": int(
+                    metrics["applied_takeovers"]),
+                "component_continuity_takeover_application_rows": int(
+                    len(applications)),
+                "component_continuity_takeover_new_duplicate_components": int(
+                    metrics["new_duplicate_components"]),
+            })
+        elif calibration_name == "reconnected-companion-merge-partition":
+            stage_summary.update({
+                "reconnected_companion_partition_reconnections_audited": int(
+                    metrics["reconnections_audited"]),
+                "reconnected_companion_partition_candidate_pairings_audited":
+                    int(len(audit)),
+                "reconnected_companion_partition_eligible_partitions": int(
+                    metrics["eligible_partitions"]),
+                "reconnected_companion_partition_applied_partitions": int(
+                    metrics["applied_partitions"]),
+                "reconnected_companion_partition_application_rows": int(
+                    len(applications)),
+                "reconnected_companion_partition_new_duplicate_components":
+                    int(metrics["new_duplicate_components"]),
+            })
+        else:
+            stage_summary.update({
+                f"{summary_prefix}_proposals_audited": int(len(audit)),
+                f"{summary_prefix}_applied_proposals": int(
+                    metrics["applied_proposals"]),
+            })
+        if calibration_name == "recording-start-two-seat":
+            stage_summary.update({
+                "recording_start_two_seat_eligible_proposals": int(
+                    metrics["eligible_proposals"]),
+                "recording_start_two_seat_explained_projection_components_added":
+                    int(metrics["explained_projection_components_added"]),
+                "recording_start_two_seat_unexplained_duplicate_components_added":
+                    int(metrics["unexplained_duplicate_components_added"]),
+            })
+        elif calibration_name not in {
+                "reconnected-companion-merge-partition",
+                "component-continuity-duplicate-takeover",
+                "persistent-single-owner-flash",
+                "medium-window-persistent-owner-flash",
+                "anchored-projection-owner-relay",
+                "terminal-projection-chain-completion",
+                "body-scale-ownerless-allocation",
+                "terminal-boundary-vanished-seat-partition",
+                "bracketed-ownerless-seat-with-fragmented-encounter",
+                "temporal-core-path-lineage",
+                "asymmetric-fusion-area-flip-recovery",
+                "recurrent-dominant-body-relay",
+                "established-seat-cycle-recovery",
+                "dormant-seat-successor-recovery",
+                "staggered-fusion-exchange-recovery",
+                "large-persistent-reference-relay",
+                "dormant-owner-reciprocal-partition",
+                "conservative-episode-ownership",
+                "original-body-continuity",
+                "right-censored-reciprocal-exchange",
+                "right-censored-seat-partition"}:
+            stage_summary["ownerless_cohort_gap_changed_identities"] = int(
+                metrics["changed_identities"])
+        stage_summary.update({
+            f"{summary_prefix}_{kind}_targets": 0
+            for kind in ("identity", "owner", "track", "frame", "coordinate",
+                         "event", "region", "review_case")
+        })
+        summary.update(stage_summary)
+        write_json(outputs["history_summary"], summary)
+        for label, path in outputs.items():
+            run.record(label, path)
+        run.finish({
+            **summary, "targeting_mode": "field_wide_discovery",
+            "final_frames": int(len(candidate)),
+            "foreground_accounting_disjoint": bool(not np.any(
+                (candidate > 0) & (candidate_unclaimed > 0))),
+            "labels_sha256": sha256(outputs["labels"]),
+            "unclaimed_sha256": sha256(outputs["unclaimed"]),
+            "events_sha256": sha256(outputs["events"]),
+        })
+    except BaseException as error:
+        run.fail(error)
+        raise
+    print(f"DONE {stem} {run_name}: accepted label tail appended to "
           f"m22_accepted_history/{parent_run}")
 
 
@@ -1914,12 +3392,52 @@ def main() -> None:
     parser.add_argument("--review-only-from")
     parser.add_argument("--accepted-only-from")
     parser.add_argument("--accepted-tail-from")
+    parser.add_argument("--accepted-label-tail-from")
+    parser.add_argument("--accepted-tail-events", type=Path)
+    parser.add_argument("--accepted-tail-event-members", type=Path)
+    parser.add_argument("--accepted-tail-points", type=Path)
+    parser.add_argument(
+        "--accepted-tail-calibration",
+        choices=("short-owned-companion", "recurrent-branch-swarm",
+                 "aggregate-shared-core", "weak-terminal-relay",
+                 "single-owner-multireference-relay",
+                 "event-local-subresolution", "short-ownerless-subcellular",
+                 "recording-start-two-seat",
+                 "reconnected-companion-merge-partition",
+                 "component-continuity-duplicate-takeover",
+                 "right-censored-reciprocal-exchange",
+                 "persistent-single-owner-flash",
+                 "right-censored-seat-partition",
+                 "detached-projection-owner-relay",
+                 "right-censored-novel-body",
+                 "detached-fading-projection",
+                 "medium-window-persistent-owner-flash",
+                 "anchored-projection-owner-relay",
+                 "terminal-projection-chain-completion",
+                 "explained-projection-event",
+                 "conserved-multi-anchor-projection",
+                 "body-scale-ownerless-allocation",
+                 "terminal-boundary-vanished-seat-partition",
+                 "fragmented-subcellular-episode",
+                 "bracketed-ownerless-seat-with-fragmented-encounter",
+                 "temporal-core-path-lineage",
+                 "ownerless-reference-handoff",
+                 "asymmetric-fusion-area-flip-recovery",
+                 "recurrent-dominant-body-relay",
+                 "established-seat-cycle-recovery",
+                 "dormant-seat-successor-recovery",
+                 "staggered-fusion-exchange-recovery",
+                 "large-persistent-reference-relay",
+                 "dormant-owner-reciprocal-partition",
+                 "conservative-episode-ownership",
+                 "original-body-continuity"),
+        default="short-owned-companion")
     parser.add_argument("--accepted-checkpoints-from")
     parser.add_argument("--anchor-inputs-from")
     parser.add_argument("--resume-after-m5-from")
     args = parser.parse_args()
     modes = [args.review_only_from, args.accepted_only_from,
-             args.accepted_tail_from,
+             args.accepted_tail_from, args.accepted_label_tail_from,
              args.resume_after_m5_from]
     if sum(value is not None for value in modes) > 1:
         parser.error("choose only one resume/review mode")
@@ -1927,6 +3445,13 @@ def main() -> None:
         parser.error("--accepted-checkpoints-from requires --accepted-only-from")
     if args.anchor_inputs_from and not args.accepted_only_from:
         parser.error("--anchor-inputs-from requires --accepted-only-from")
+    if ((args.accepted_tail_events or args.accepted_tail_event_members
+         or args.accepted_tail_points)
+            and not (args.accepted_tail_from
+                     or args.accepted_label_tail_from)):
+        parser.error(
+            "accepted-tail event inputs require --accepted-tail-from or "
+            "--accepted-label-tail-from")
     if args.review_only_from:
         run_review_only(args.run, args.review_only_from, args.stem, args.config)
     elif args.accepted_only_from:
@@ -1936,7 +3461,14 @@ def main() -> None:
             anchor_run_name=args.anchor_inputs_from)
     elif args.accepted_tail_from:
         run_accepted_tail(
-            args.run, args.accepted_tail_from, args.stem, args.config)
+            args.run, args.accepted_tail_from, args.stem, args.config,
+            args.accepted_tail_events, args.accepted_tail_event_members,
+            args.accepted_tail_calibration, args.accepted_tail_points)
+    elif args.accepted_label_tail_from:
+        run_accepted_label_tail(
+            args.run, args.accepted_label_tail_from, args.stem, args.config,
+            args.accepted_tail_events, args.accepted_tail_event_members,
+            args.accepted_tail_calibration, args.accepted_tail_points)
     elif args.resume_after_m5_from:
         run_resume_after_m5(
             args.run, args.resume_after_m5_from, args.stem, args.config)

@@ -51,10 +51,14 @@ def _mean_squared_displacement(
     *,
     return_curve: bool = False,
 ) -> dict | tuple[dict, pd.DataFrame]:
-    """MSD per lag, then a log-log slope.
+    """Mean squared centroid displacement per time gap, then its growth exponent.
 
-    A slope near 1 is a random walk, below 1 is confined wandering, above 1 is
-    directed travel. Microglial somata usually sit well below 1.
+    For every available pair of centroid positions exactly ``lag`` frames
+    apart, square their distance and average those squared distances. The
+    exponent is the power ``alpha`` in ``mean squared displacement = constant
+    * lag ** alpha``. It is fitted by a straight line after taking logarithms
+    of both quantities: alpha near 1 is random-walk-like, below 1 grows more
+    slowly, and above 1 grows more quickly.
     """
     lookup = {int(f): coords[i] for i, f in enumerate(frames)}
     lags, values, pairs = [], [], []
@@ -118,9 +122,9 @@ PRODUCES = (
     Column("max_step_px", "Centroid step, largest", "px", "motility"),
     Column("median_soma_step_px", "Soma step, median", "px", "motility"),
     Column("median_step_px_including_gaps", "Centroid step, median across gaps", "px", "motility"),
-    Column("territory_hull_px2", "Convex hull of the path", "px^2", "motility"),
+    Column("territory_hull_px2", "Area enclosed by the cell-centre path", "px^2", "motility"),
     Column("mean_speed", "Speed, mean", "px per min", "motility"),
-    Column("msd_alpha", "Motion scaling exponent, α", "", "motility"),
+    Column("msd_alpha", "Mean-squared-displacement growth exponent, α", "", "motility"),
     Column("msd_lag1_px2", "Mean squared displacement at one frame", "px²", "motility"),
     Column("msd_points", "Lags the exponent was fitted over", "count", "motility"),
     Column("total_path_um", "Path travelled in total", "µm", "motility"),

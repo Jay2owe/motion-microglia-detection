@@ -115,9 +115,12 @@
       "include_unclaimed": false
     },
     "regimes": {
-      "n_regimes": 4,
-      "standardise": true,
-      "random_state": 20260825,
+      "size_column": "area_px",
+      "movement_column": "step_px_gapless",
+      "category_quantiles": [
+        0.3333333333333333,
+        0.6666666666666666
+      ],
       "min_frames_per_cell": 12
     },
     "coupling": {
@@ -136,12 +139,49 @@
         "step_px"
       ],
       "period_search_hours": [
-        16.0,
-        32.0
+        2.0,
+        48.0
       ],
-      "period_step_hours": 0.1,
+      "period_methods": [
+        "lomb",
+        "chi_square",
+        "f"
+      ],
+      "period_estimation_method": "lomb",
+      "primary_rhythm_test": "lomb",
       "fixed_period_hours": 24.0,
+      "descriptive_cosinor": false,
+      "daily_profile_measures": false,
       "detrend": "linear",
+      "detrend_window_hours": 24.0,
+      "detrend_polynomial_degree": 3,
+      "detrend_min_valid_fraction": 0.5,
+      "detrend_bandwidth_hours": null,
+      "detrend_low_cut_hours": 45.0,
+      "detrend_high_cut_hours": 4.0,
+      "detrend_filter_order": 2,
+      "detrend_lowess_fraction": null,
+      "detrend_lowess_iterations": 3,
+      "detrend_asls_smoothness": 1000000.0,
+      "detrend_asls_asymmetry": 0.01,
+      "detrend_asls_iterations": 10,
+      "jtk_periods": [
+        4.0,
+        6.0,
+        8.0,
+        12.0,
+        16.0,
+        20.0,
+        24.0,
+        28.0,
+        32.0,
+        36.0,
+        48.0
+      ],
+      "ejtk_permutations": 1000,
+      "jtk_correction": "none",
+      "jtk_seed": 20260901,
+      "workbench_config": {},
       "min_observations": 24,
       "min_cycles_for_confident_period": 3.0,
       "rhythmic_alpha": 0.05

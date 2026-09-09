@@ -106,18 +106,21 @@ def _trail_age(values: np.ndarray, scale: float, levels: int) -> np.ndarray:
 
 
 #: Every number here describes a transition between two frames rather than a
-#: state, which is why ``turnover_index`` carries its unit as ``per {interval}``
-#: - the count is per frame, and a 15 min recording must not be labelled 30 min.
+#: state, which is why ``turnover_index`` is explicitly a fraction per
+#: ``{interval}`` - a 15 min recording must not be labelled 30 min.
 PRODUCES = (
     Column("from_frame_index", "Frame the change started from", "frame", "reference"),
     Column("gap_frames", "Frames missing", "frames", "reference"),
-    Column("turnover_index", "Pixels replaced", "per {interval}", "surveillance"),
+    Column("turnover_index", "Footprint turnover fraction",
+           "fraction per {interval}", "surveillance"),
     Column("jaccard", "Footprint overlap with previous frame", "0-1", "surveillance"),
     Column("held_px", "Pixels held", "px", "surveillance"),
     Column("gained_px", "Pixels gained", "px", "surveillance"),
     Column("lost_px", "Pixels lost", "px", "surveillance"),
     Column("area_change_px", "Area change", "px", "surveillance"),
     Column("extension_bias", "Extension bias", "-1 to 1", "surveillance"),
+    Column("balanced_turnover_fraction", "Balanced footprint turnover", "fraction",
+           "surveillance"),
 )
 
 
@@ -172,6 +175,10 @@ def measure(context: MeasurementContext) -> dict[str, pd.DataFrame]:
                     "area_change_px": int(mask.sum()) - int(last_mask.sum()),
                     "extension_bias": (
                         (gained - lost) / (gained + lost) if (gained + lost) else np.nan
+                    ),
+                    "balanced_turnover_fraction": (
+                        1 - abs(gained - lost) / (gained + lost)
+                        if (gained + lost) else np.nan
                     ),
                 }
             )

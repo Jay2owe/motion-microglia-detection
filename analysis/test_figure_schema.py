@@ -12,11 +12,14 @@ figure and says nothing - so each one is written as the sentence it is checking.
 from __future__ import annotations
 
 import inspect
+import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+from analysis import circadian as workbench
 
 FIGURES = Path(__file__).resolve().parent / "figures"
 sys.path.insert(0, str(FIGURES))
@@ -33,11 +36,12 @@ from _schema import (FigureContext, FigureResult, FigureSpec, Input, Option,  # 
 #: may shrink; a new entry has to be added deliberately, which is the point.
 INLINE_PANELS: tuple[str, ...] = (
     "breath-trace.small_multiples",
-    "breakout-triggered-average.alignment",
     "independence-map.measures",
-    "negative-space.stages",
-    "tissue-tectonics.contested",
-    "tissue-tectonics.handoffs",
+)
+
+
+AMBIGUOUS_DISPLAY_TERMS: tuple[str, ...] = (
+    "breakout", "excursion", "upheaval", "programme", "report card",
 )
 
 
@@ -83,7 +87,7 @@ def _context(spec: FigureSpec, argv: list[str], tables: Path | None = None
 def test_every_numbered_builder_registers_exactly_one_figure():
     """A file in the numbered set is a figure, or it is on its way to being one."""
     rows = catalogue()
-    assert len(rows) == 36, "the numbered set changed size; update this number"
+    assert len(rows) == 45, "the numbered set changed size; update this number"
     for number, path, spec in rows:
         if spec is None:
             continue
@@ -98,6 +102,32 @@ def test_no_two_figures_share_a_slug_or_a_number():
     numbers = [spec.number for spec in specs]
     assert len(set(slugs)) == len(slugs), "two figures claim one slug"
     assert len(set(numbers)) == len(numbers), "two figures claim one number"
+
+
+def test_user_facing_figure_names_avoid_undefined_metaphors():
+    """Stable machine slugs may stay; text printed on figures must name measurements."""
+    for spec in load_all().values():
+        displayed = [spec.title, spec.summary, *(panel.heading() for panel in spec.panels)]
+        for text in displayed:
+            lowered = text.lower()
+            assert not any(term in lowered for term in AMBIGUOUS_DISPLAY_TERMS), (
+                f"{spec.slug} displays an undefined metaphor in {text!r}"
+            )
+
+
+def test_review_figures_live_in_the_review_module():
+    """A quality-control plot cannot silently return to the result set."""
+    review = FIGURES / "review"
+    for spec in load_all().values():
+        expected = review if spec.purpose == "review" else FIGURES
+        assert spec.source.parent == expected, (
+            f"{spec.slug} declares purpose={spec.purpose!r} but lives in "
+            f"{spec.source.parent}")
+
+
+def test_only_result_or_review_is_a_valid_figure_purpose():
+    with pytest.raises(ValueError, match="purpose must be"):
+        _spec(purpose="decoration")
 
 
 def test_every_declared_option_is_in_the_shared_vocabulary():
@@ -145,12 +175,155 @@ def test_every_panel_names_a_callable_that_takes_an_axes_or_a_figure():
 def test_build_all_passes_through_exactly_what_every_figure_takes():
     """`build_all` writes the shared set out rather than importing it.
 
-    It launches thirty-six subprocesses and has no other reason to load
+    It launches one subprocess per builder and has no other reason to load
     matplotlib, so the list is duplicated on purpose. This is what keeps the
     duplicate honest.
     """
     import build_all
     assert build_all.SHARED == {"stem", *_schema.UNIVERSAL_SWITCHES}
+
+
+def test_build_all_can_select_result_or_review_builders():
+    import build_all
+    from _builders import is_review_builder
+
+    review = [path for path in build_all.BUILDERS if is_review_builder(path)]
+    results = [path for path in build_all.BUILDERS if not is_review_builder(path)]
+    assert len(review) == 6
+    assert any(path.name == "03_surveillance_not_translocation.py" for path in review)
+    assert any(path.name == "16_territory_anchoring.py" for path in review)
+    assert len(results) == 39
+
+
+@pytest.mark.parametrize(
+    "builder",
+    ["08_identity_trajectories.py", "22_independence_map.py"],
+)
+def test_circadian_builders_launch_directly_from_the_project_root(builder):
+    """Builders must find the analysis package before `_schema` is imported.
+
+    `build_all.py` launches each builder as a script.  These two pages import
+    the Circadian Workbench adapter before `_schema` can put the project root
+    on `sys.path`, so their own launch preamble must do it first.
+    """
+    done = subprocess.run(
+        [sys.executable, str(FIGURES / builder), "--help"],
+        cwd=FIGURES.parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "usage:" in done.stdout
+
+
+def test_cells_on_screen_owns_the_lifespan_views_and_the_old_page_is_gone():
+    specs = load_all()
+    assert "lifespan-gantt" not in specs
+    panels = {panel.key: panel.draw for panel in specs["cells-on-screen"].panels}
+    assert {"lifespan", "arrivals", "coverage"} <= set(panels)
+    from panels import common, presence
+    assert panels["lifespan"] is presence.lifespan_bars
+    assert panels["arrivals"] is common.histogram
+    assert panels["coverage"] is common.histogram
+
+
+def test_repeated_motion_evidence_budget_is_not_a_figure():
+    assert "motion-evidence-budget" not in load_all()
+
+
+def test_negative_space_has_one_configurable_coverage_map():
+    spec = load_all()["negative-space"]
+    assert [panel.key for panel in spec.panels] == ["coverage", "composition"]
+    from panels import territory
+    assert spec.panel("coverage").draw is territory.coverage_history
+    assert spec.panel("composition").draw is territory.coverage_composition
+    assert spec.option("coverage_view").default == "stages"
+
+
+def test_patch_ledger_declares_reusable_maps_and_a_configurable_permutation_test():
+    spec = load_all()["patch-ledger"]
+    from panels import territory
+    assert spec.panel("revisit").draw is territory.revisit_grid
+    assert spec.panel("revisit").block
+    assert spec.panel("coverage").draw is territory.coverage_curve
+    assert spec.option("shuffles").default == 1000
+
+
+def test_pixel_fate_flow_accepts_named_event_times_through_shared_options():
+    spec = load_all()["pixel-fate-flow"]
+    from panels import territory
+    assert spec.panel("flow").draw is territory.fate_flow
+    assert spec.option("events").default == []
+    assert spec.option("event_times").default == []
+
+
+def test_tissue_tectonics_has_the_six_canonical_maps_in_order():
+    spec = load_all()["tissue-tectonics"]
+    from analysis.circadian import CIRCADIAN_ANALYSIS_OPTIONS
+    from panels import territory
+
+    assert [panel.key for panel in spec.panels] == [
+        "first_coverage", "cumulative_occupancy", "unique_cells", "speed",
+        "significant_period", "splitting_events",
+    ]
+    assert spec.panel("first_coverage").draw is territory.first_coverage_time_map
+    assert spec.panel("cumulative_occupancy").draw is territory.cumulative_occupancy_map
+    assert spec.panel("unique_cells").draw is territory.owner_count_map
+    assert spec.panel("speed").draw is territory.cell_metric_map
+    assert spec.panel("significant_period").draw is territory.cell_metric_map
+    assert spec.panel("significant_period").title == (
+        "All significant intensity periods\nBlack boundary: supported subset"
+    )
+    assert spec.panel("splitting_events").draw is territory.split_event_map
+    assert {option.name for option in spec.options} >= {
+        "map_summary", "map_assignment", "map_luts", "map_range",
+        *CIRCADIAN_ANALYSIS_OPTIONS,
+    }
+    assert spec.option("fit_method").default == "lomb"
+    assert spec.option("significance_method").default == "lomb"
+    assert spec.option("multiple_testing").default == "none"
+
+
+def test_tissue_tectonics_uses_uniform_map_text_and_outer_coordinate_ticks():
+    import matplotlib.pyplot as plt
+    from analysis.theme import load_theme
+
+    spec = load_all()["tissue-tectonics"]
+    style_map_grid = spec.build.__globals__["_style_map_grid"]
+    theme = load_theme()
+    figure, raw_axes = plt.subplots(2, 3)
+    keys = [
+        "first_coverage", "cumulative_occupancy", "unique_cells",
+        "speed", "significant_period", "splitting_events",
+    ]
+    axes = dict(zip(keys, raw_axes.ravel()))
+    positions = {key: divmod(index, 3) for index, key in enumerate(keys)}
+    for ax in axes.values():
+        ax.set_title("Panel")
+        ax.set_xlabel("X position")
+        ax.set_ylabel("Y position")
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+
+    style_map_grid(axes, positions, theme)
+
+    assert {ax.title.get_fontsize() for ax in axes.values()} == {theme.size("panel")}
+    assert {ax.xaxis.label.get_fontsize() for ax in axes.values()} == {
+        theme.size("annotation")
+    }
+    assert {label.get_fontsize() for ax in axes.values()
+            for label in [*ax.get_xticklabels(), *ax.get_yticklabels()]} == {
+        theme.size("caption")
+    }
+    assert not any(label.get_visible() for ax in raw_axes[0]
+                   for label in ax.get_xticklabels())
+    assert all(label.get_visible() for ax in raw_axes[1]
+               for label in ax.get_xticklabels())
+    assert all(label.get_visible() for ax in raw_axes[:, 0]
+               for label in ax.get_yticklabels())
+    assert not any(label.get_visible() for ax in raw_axes[:, 1:].ravel()
+                   for label in ax.get_yticklabels())
+    plt.close(figure)
 
 
 def test_the_panels_still_drawn_inline_are_the_ones_on_the_list():
@@ -270,6 +443,19 @@ def test_an_absent_flag_gives_the_declared_default():
     ctx = _context(_spec(), ["run"])
     assert ctx.option("bins") == 45
     assert ctx.option_source["bins"] == "default"
+
+
+def test_all_detrending_figures_expose_and_inherit_the_complete_control_set(monkeypatch):
+    from analysis.circadian import DETREND_DEFAULTS
+    load_all()
+    spec = _schema.get_figure("metric-rhythm-matrix")
+    assert DETREND_DEFAULTS.keys() <= {option.name for option in spec.options}
+    monkeypatch.setattr(_schema, "module_params", lambda *args: {
+        "detrend_polynomial_degree": 3, "detrend_filter_order": 4})
+    ctx = _context(spec, ["--detrend-polynomial-degree", "6"])
+    effective = ctx.module_params("rhythms")
+    assert effective["detrend_polynomial_degree"] == 6
+    assert effective["detrend_filter_order"] == 4
 
 
 def test_a_figure_may_narrow_the_shared_cast():
@@ -684,3 +870,460 @@ def test_a_placement_in_a_run_is_not_mistaken_for_a_figures_own_option(tmp_path)
         stem=None, argv=["run"],
     )
     assert ctx._from_run_options() == {}, "a placement is not this figure's option"
+
+
+# --------------------------------------------- tables that belong to the run
+
+from _bundle import (POOLED_FOLDER as BUNDLE_POOLED, any_movie,  # noqa: E402
+                     require_run_table, require_table, tables_for)
+
+def _run_with(tmp_path, movie_tables=(), run_files=(), pooled_tables=()):
+    """A run folder shaped the way ``analysis.run`` writes one."""
+    for name in movie_tables:
+        path = tmp_path / "m_a" / "tables" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("a\n1\n", encoding="utf-8")
+    for name in run_files:
+        (tmp_path / name).write_text("a\n1\n", encoding="utf-8")
+    for name in pooled_tables:
+        path = tmp_path / "pooled" / "tables" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("a\n1\n", encoding="utf-8")
+    return tmp_path / "m_a" / "tables"
+
+
+def test_a_run_scoped_table_resolves_from_the_run_root(tmp_path):
+    tables = _run_with(tmp_path, movie_tables=["cell_frame.csv"],
+                       run_files=["statistics.csv"])
+    found = require_run_table(tables, "statistics.csv", "contrasts")
+    assert found == tmp_path / "statistics.csv"
+
+
+def test_a_movie_scoped_table_is_not_found_at_the_run_root(tmp_path):
+    """The reason the two searches are separate functions.
+
+    One search that tried both would make every movie-level table findable at
+    the run root, and a page claiming one movie would draw the pooled stack of
+    all of them.
+    """
+    tables = _run_with(tmp_path, movie_tables=["cell_frame.csv"],
+                       run_files=["statistics.csv"])
+    with pytest.raises(SystemExit, match="rhythms"):
+        require_table(tables, "rhythms.csv", "rhythms")
+
+
+def test_a_pooled_table_resolves_at_run_scope(tmp_path):
+    tables = _run_with(tmp_path, movie_tables=["cell_frame.csv"],
+                       pooled_tables=["cell_summary.csv"])
+    found = require_run_table(tables, "cell_summary.csv", "presence")
+    assert found == tmp_path / "pooled" / "tables" / "cell_summary.csv"
+
+
+def test_a_missing_run_table_says_a_contrasts_block_is_what_writes_one(tmp_path):
+    tables = _run_with(tmp_path, movie_tables=["cell_frame.csv"])
+    with pytest.raises(SystemExit, match="contrasts"):
+        require_run_table(tables, "statistics.csv", "contrasts")
+
+
+def test_a_table_scope_outside_the_two_is_refused_at_declaration_time():
+    with pytest.raises(ValueError, match="movie.*run"):
+        Table("x.csv", module="m", scope="everywhere")
+
+
+def test_the_default_scope_is_the_movie_so_nothing_already_written_moved():
+    assert Table("cell_frame.csv", module="motility").scope == "movie"
+
+
+def test_a_page_is_run_level_only_when_every_source_is():
+    """A stem it does not need is a stem it must not ask for."""
+    run_only = _spec(reads=(Table("statistics.csv", module="c", scope="run"),))
+    mixed = _spec(reads=(Table("statistics.csv", module="c", scope="run"),
+                         Table("cell_frame.csv", module="m")))
+    assert run_only.run_level
+    assert not mixed.run_level
+    assert not _spec(reads=()).run_level
+
+
+def test_the_pooled_folder_is_never_mistaken_for_a_movie(tmp_path):
+    """It holds a tables folder too, and would otherwise demand a --stem.
+
+    On a pooled run of one movie every figure would refuse to draw until given
+    a stem it should not need; on a run of several, ``--stem pooled`` would
+    draw every movie at once on a page whose words say one.
+    """
+    _run_with(tmp_path, movie_tables=["cell_frame.csv"],
+              pooled_tables=["cell_frame.csv"])
+    assert tables_for(tmp_path) == tmp_path / "m_a" / "tables"
+    assert any_movie(tmp_path) == "m_a"
+
+
+def test_the_pooled_folder_has_one_name_across_the_package():
+    """Restated in _bundle so drawing does not import the measurement package."""
+    from analysis.pool import POOLED_FOLDER as measured
+
+    assert BUNDLE_POOLED == measured
+
+
+def _forest_page():
+    import importlib.util
+
+    path = FIGURES / "review" / "39_contrast_forest.py"
+    spec = importlib.util.spec_from_file_location("_forest_page", path)
+    page = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(page)
+    return page
+
+
+def test_the_forest_page_agrees_with_the_floor_the_contrasts_step_applies():
+    """The figure restates it rather than importing it, so this is the check."""
+    from analysis.contrasts import MIN_UNITS as applied
+
+    assert _forest_page().MIN_UNITS == applied
+
+
+def test_every_effect_a_test_can_report_has_words_on_the_forest():
+    """A new test brings a new effect kind, and the axis is where it surfaces.
+
+    Without this the page falls back to the column name with its underscores
+    turned into spaces, which reads as an axis label right up until somebody
+    tries to say what it means.
+    """
+    from analysis.contrasts import TESTS
+
+    labels = _forest_page().EFFECT_LABELS
+    undescribed = sorted({spec["effect_kind"] for spec in TESTS.values()}
+                         - set(labels))
+    assert not undescribed, (
+        f"no words for {undescribed}; add an entry to EFFECT_LABELS in "
+        f"39_contrast_forest.py")
+
+
+def test_a_bundle_that_read_nothing_still_writes_a_usable_source_index(tmp_path):
+    """A page can legitimately read no table, and its bundle must still be valid.
+
+    pandas gives a frame built from no rows no columns either, so the index came
+    out headerless and the ReproFig writer refused it for missing every required
+    field. The page that hits this is the contrast forest on a run whose
+    configuration declared no comparisons.
+    """
+    from _bundle import make_bundle
+
+    table = make_bundle(tmp_path, {})
+    written = pd.read_csv(tmp_path / "data" / "sources.csv")
+    for column in ("short_name", "copied_path", "file_name",
+                   "modification_time", "byte_size", "sha256"):
+        assert column in table.columns
+        assert column in written.columns
+    assert "original_path" not in table.columns
+    assert "original_path" not in written.columns
+    assert written.empty
+
+
+def test_a_bundle_source_index_does_not_disclose_its_original_path(tmp_path):
+    from _bundle import make_bundle
+
+    source = tmp_path / "private" / "measurements.csv"
+    source.parent.mkdir()
+    source.write_text("value\n1\n", encoding="utf-8")
+    bundle = tmp_path / "bundle"
+    make_bundle(bundle, {"measurements.csv": source})
+
+    assert str(source) not in (bundle / "data" / "sources.csv").read_text(encoding="utf-8")
+    assert str(source) not in (bundle / "data" / "sources.md").read_text(encoding="utf-8")
+
+
+def test_a_source_can_be_recorded_without_being_a_declared_table(tmp_path):
+    """The escape hatch for a page whose claim is that a file is absent."""
+    evidence = tmp_path / "manifest.json"
+    evidence.write_text("{}", encoding="utf-8")
+    ctx = _context(_spec(), [])
+
+    ctx.record_source("manifest.json", evidence)
+    assert ctx.sources["manifest.json"] == evidence
+    with pytest.raises(SystemExit, match="is not there"):
+        ctx.record_source("gone.json", tmp_path / "gone.json")
+
+
+def test_a_long_table_contrast_is_blocked_by_the_thing_it_measured():
+    """Two slopes both reading "per h" are not two points on one ruler.
+
+    ``trend`` and ``window_change`` put the measurement in a column, so a
+    contrast on one of them tests a single column across groups that are
+    themselves measurements. Without this, a slope of an area and a slope of a
+    brightness five orders of magnitude away share an axis, and the smaller of
+    them is drawn on the no-effect line - which reads as no effect, the
+    opposite of what it says.
+    """
+    scale = _forest_page()._scale
+    area = scale("median_against_zero", "slope_per_hour", 30.0,
+                 group_by="metric", group="area_px")
+    reporter = scale("median_against_zero", "slope_per_hour", 30.0,
+                     group_by="metric", group="corrected_mean")
+
+    assert area != reporter
+    assert "px per h" in area
+    assert "camera units per h" in reporter
+
+
+def test_grouping_by_something_that_is_not_a_measurement_changes_nothing():
+    """The ordinary case: a condition is a group, not a unit."""
+    scale = _forest_page()._scale
+    assert scale("median_difference", "area_px_median", 30.0,
+                 group_by="condition", group="treated") == scale(
+                     "median_difference", "area_px_median", 30.0)
+
+
+def test_a_metric_group_nothing_has_words_for_is_left_alone():
+    """An undocumented group name would otherwise invent a unit for itself."""
+    scale = _forest_page()._scale
+    assert scale("median_against_zero", "slope_per_hour", 30.0,
+                 group_by="metric", group="not_a_column") == scale(
+                     "median_against_zero", "slope_per_hour", 30.0)
+
+
+# ------------------------------------------------ physical panel dimensions
+
+def test_breath_trace_declares_tall_individual_panels():
+    spec = load_all()["breath-trace"]
+    assert {panel.key: panel.min_height_inches for panel in spec.panels} == {
+        "breath": 7.0,
+        "small_multiples": 7.0,
+    }
+
+
+def _layout_context(*panels):
+    """A drawing context using the unscaled house theme."""
+    from analysis.theme import load_theme
+
+    ctx = _context(_spec(panels=tuple(panels)), [])
+    ctx.theme = load_theme("house")
+    return ctx
+
+
+def _axes_inches(figure_, axis):
+    """The physical drawing rectangle, excluding the page margins."""
+    box = axis.get_position()
+    return box.width * figure_.get_figwidth(), box.height * figure_.get_figheight()
+
+
+def test_adding_a_grid_column_grows_the_page_without_shrinking_a_plot():
+    """A composite is a larger sheet, not a thumbnail maker."""
+    left = Panel("left", _panel, min_width_inches=6.0, min_height_inches=4.0)
+    right = Panel("right", _panel, min_width_inches=6.0, min_height_inches=4.0)
+    wide = Panel("wide", _panel, min_width_inches=13.0, min_height_inches=3.0)
+    ctx = _layout_context(left, right, wide)
+
+    single, single_axes = ctx.grid_layout([left], {"left": (0, 0, 1, 1)})
+    composite, composite_axes = ctx.grid_layout(
+        [left, right, wide],
+        {"left": (0, 0, 1, 1), "right": (0, 1, 1, 1),
+         "wide": (1, 0, 1, 2)},
+    )
+
+    single_width, single_height = _axes_inches(single, single_axes["left"])
+    composite_width, composite_height = _axes_inches(
+        composite, composite_axes["left"])
+    assert single.get_figwidth() == pytest.approx(13.8)
+    assert composite.get_figwidth() > single.get_figwidth()
+    assert composite_width >= single_width
+    assert composite_height >= single_height
+    for key, minimum in {"left": (6.0, 4.0), "right": (6.0, 4.0),
+                         "wide": (13.0, 3.0)}.items():
+        width, height = _axes_inches(composite, composite_axes[key])
+        assert width >= minimum[0] - 1e-9
+        assert height >= minimum[1] - 1e-9
+
+    import matplotlib.pyplot as plt
+    plt.close(single)
+    plt.close(composite)
+
+
+def test_stacked_panels_keep_their_declared_height_when_the_page_grows():
+    first = Panel("first", _panel, min_width_inches=8.0, min_height_inches=4.5)
+    second = Panel("second", _panel, min_width_inches=11.0, min_height_inches=6.0)
+    ctx = _layout_context(first, second)
+
+    single, single_axes = ctx.layout([first])
+    stacked, stacked_axes = ctx.layout([first, second])
+
+    assert _axes_inches(single, single_axes["first"])[1] == pytest.approx(4.5)
+    assert _axes_inches(stacked, stacked_axes["first"])[1] == pytest.approx(4.5)
+    assert _axes_inches(stacked, stacked_axes["second"])[1] == pytest.approx(6.0)
+    assert stacked.get_figheight() > single.get_figheight()
+
+    import matplotlib.pyplot as plt
+    plt.close(single)
+    plt.close(stacked)
+
+
+def test_a_small_multiple_grid_adds_rows_and_columns_at_the_item_size():
+    panel = Panel(
+        "maps", _panel, item_width_inches=3.0, item_height_inches=2.5,
+        item_gap_inches=0.25)
+
+    assert panel.grid_minimum(1, 4) == pytest.approx((11.0, 5.0))
+    assert panel.grid_minimum(8, 4) == pytest.approx((12.75, 5.25))
+    assert panel.grid_minimum(12, 4) == pytest.approx((12.75, 8.0))
+
+
+@pytest.mark.parametrize("width,height", [(0, 5), (5, 0), (-1, 5),
+                                           (float("nan"), 5)])
+def test_a_panel_refuses_a_non_physical_minimum_size(width, height):
+    with pytest.raises(ValueError, match="finite positive inches"):
+        Panel("bad", _panel, min_width_inches=width, min_height_inches=height)
+
+
+def test_predictability_clock_names_its_descriptive_rule_and_configured_cycle():
+    from panels import common
+
+    spec = load_all()["predictability-clock"]
+    assert spec.panel("dial").draw is common.rose
+    assert spec.option("period_hours").default == 24.0
+    assert spec.option("hour_ticks").default == 6.0
+    assert "metrics" not in {option.name for option in spec.options}
+    assert "prediction" not in spec.title.lower()
+
+
+def test_the_spatial_phase_map_uses_the_generic_chart_panel():
+    from panels import common
+
+    spec = load_all()["independence-map"]
+    assert spec.panel("field").draw is common.phase_map
+
+
+def test_recurrence_wall_uses_plain_time_wording_and_a_noise_comparison():
+    from panels import common
+
+    spec = load_all()["recurrence-wall"]
+    assert spec.panel("quantified").draw is common.dumbbell
+    assert spec.option("cells").default == "9"
+    assert spec.option("hour_ticks").default == 3.0
+    assert "lag" not in " ".join(panel.heading().lower() for panel in spec.panels)
+
+
+def test_radial_occupancy_rhythms_is_a_configurable_generic_trace_matrix():
+    from panels import common
+
+    spec = load_all()["radial-occupancy-rhythms"]
+    assert spec.panel("matrix").draw is common.raster
+    assert spec.option("scaling").default == "cell"
+    assert spec.option("display").default == "raw"
+    assert spec.option("period_min_hours").default == 2.0
+    assert spec.option("period_max_hours").default == 48.0
+    assert spec.option("fit_method").default is None
+    assert spec.option("multiple_testing").default == "bh"
+
+
+def test_metric_rhythm_matrix_accepts_metrics_and_the_full_period_test_controls():
+    from panels import rhythms
+
+    spec = load_all()["metric-rhythm-matrix"]
+    assert spec.panel("matrix").draw is rhythms.period_status_matrix
+    assert spec.option("metrics").default == [
+        "corrected_mean", "area_px", "speed", "reach_p95"
+    ]
+    assert spec.option("fit_method").default is None  # inherit the main analysis estimator
+    assert spec.option("detrend").default is None
+    assert spec.option("detrend_window_hours").default is None
+    assert spec.option("period_min_hours").default == 2.0
+    assert spec.option("period_max_hours").default == 48.0
+    assert spec.option("multiple_testing").default == "bh"
+    assert spec.option("correction_scope").default == "matrix"
+    assert spec.option("column_label_rotation").default == 0.0
+    assert spec.option("column_label_wrap").default == 18
+
+
+def test_cd68_rhythm_card_refits_broadly_and_keeps_matrix_plus_histogram():
+    from panels import rhythms
+
+    spec = load_all()["cd68-reporter-rhythm"]
+    assert spec.panel("period_histogram").draw is rhythms.significant_period_histogram
+    assert spec.panel("period_peak_matrix").draw is rhythms.timing_by_period
+    assert [panel.key for panel in spec.panels] == [
+        "raster", "period_peak_matrix", "period_histogram",
+    ]
+    assert spec.option("fit_method").default is None
+    assert spec.option("significance_method").default is None
+    assert spec.option("secondary_significance_method").default is None
+    assert spec.option("period_min_hours").default == 2.0
+    assert spec.option("period_max_hours").default == 48.0
+    assert spec.option("multiple_testing").default == "none"
+    assert spec.option("order").default == ["principal_component"]
+    builder = sys.modules["01_cd68_reporter_rhythm"]
+    assert builder._resolved_order(["principal_component"]) == [
+        "pattern_rank", "period_hours", "identity",
+    ]
+    assert builder._resolved_order(["spectral"]) == [
+        "spectral_rank", "period_hours", "identity",
+    ]
+    assert builder._resolved_order(["onset", "period"]) == [
+        "displayed_onset_hours", "period_hours", "identity",
+    ]
+    assert builder._resolved_order(["period"]) == [
+        "period_hours", "identity",
+    ]
+
+
+def test_cd68_dual_test_statistics_keep_both_tests_and_the_final_verdict():
+    load_all()
+    builder = sys.modules["01_cd68_reporter_rhythm"]
+    fits = pd.DataFrame({
+        "identity": [1, 2],
+        "metric": ["corrected_mean", "corrected_mean"],
+        "period_estimation_method": ["mesa", "mesa"],
+        "period_hours": [10.0, 18.0],
+        "primary_significance_method": ["lomb", "lomb"],
+        "primary_test_status": ["ok", "ok"],
+        "primary_p_value": [0.001, 0.2],
+        "primary_q_value": [0.002, 0.2],
+        "primary_significant": [True, False],
+        "significance_period_hours": [10.1, 18.2],
+        "secondary_significance_method": ["f", "f"],
+        "secondary_test_status": ["ok", "ok"],
+        "secondary_p_value": [0.003, 0.04],
+        "secondary_q_value": [0.006, 0.08],
+        "secondary_significant": [True, False],
+        "secondary_significance_period_hours": [10.0, 9.0],
+        "significant": [True, False],
+        "rhythm_status": ["rhythmic", "not rhythmic"],
+    })
+
+    statistics = builder._statistics_table(fits)
+
+    assert len(statistics) == 4
+    assert set(statistics["test_role"]) == {"primary", "secondary"}
+    assert set(statistics["significance_method"]) == {"lomb", "f"}
+    assert statistics.groupby("identity")["final_cell_significant"].nunique().eq(1).all()
+
+
+def test_every_figure_that_recalculates_a_rhythm_inherits_both_detrend_controls():
+    specs = load_all()
+    recalculating = (
+        "cd68-reporter-rhythm",
+        "radial-occupancy-rhythms",
+        "metric-rhythm-matrix",
+        "own-clock-composite",
+        "null-channel-phase-test",
+        "cell-report-card",
+    )
+    for slug in recalculating:
+        spec = specs[slug]
+        assert spec.option("detrend").default is None
+        assert spec.option("detrend_window_hours").default is None
+
+
+def test_every_fresh_circadian_figure_has_the_same_analysis_controls():
+    specs = load_all()
+    shared = set(workbench.CIRCADIAN_ANALYSIS_OPTIONS)
+    recalculating = [
+        spec for spec in specs.values()
+        if any(option.name in {"fit_method", "significance_method"}
+               for option in spec.options)
+    ]
+    assert recalculating
+    for spec in recalculating:
+        declared = {option.name for option in spec.options}
+        assert shared <= declared, spec.slug
+        assert spec.option("period_min_hours").default == 2.0, spec.slug
+        assert spec.option("period_max_hours").default == 48.0, spec.slug
+        assert spec.option("rhythmic_alpha").default == 0.05, spec.slug

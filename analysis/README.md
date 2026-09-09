@@ -18,8 +18,15 @@ python -m analysis theme --list                               # how figures will
 python -m analysis conditions --config analysis_config.json   # which movie is in which group
 python -m analysis doctor --config analysis_config.json       # are the inputs readable and pinned
 python -m analysis run    --config analysis_config.json --out outputs/a02_my_run
-python analysis\figures\build_all.py outputs\a02_my_run       # figure bundles
+python analysis\figures\build_all.py outputs\a02_my_run       # every figure, once each
+python -m analysis plots  outputs\a02_my_run                  # or just the ones the plan asks for
 ```
+
+`python -m analysis figures` separates scientific result figures from
+audit/review figures that inspect input and tracking quality. Their builders
+live in `analysis/figures/review/`; the original numbered commands remain as
+compatibility launchers. Build either set alone with `--results-only` or
+`--review-only`.
 
 `doctor` is the one to run first on a new dataset. It reports every input's
 fingerprint, whether it matches the pin, and — importantly — whether a spatial
@@ -42,8 +49,9 @@ outputs/<run>/
       cell_summary_windowed.csv    one row per cell per declared window
       frame_summary_windowed.csv   one row per frame per declared window
       window_change.csv      one row per cell per window per metric — against its baseline
-      rhythms.csv            cosinor + Lomb-Scargle per cell per measurement
-      rhythms_null.csv       the same tests on matched noise — the false-positive floor
+      rhythms.csv            primary rhythm verdict per cell per measurement
+      rhythm_methods.csv     one row per cell, measurement and Circadian Workbench method
+      rhythms_null.csv       the primary test on matched noise — the false-positive floor
       rhythms_population.csv do the cells agree on a phase (Rayleigh)
       recurrence.csv         one row per cell per time lag — how often it returns to a state
       recurrence_quantification.csv  one row per cell — determinism and laminarity
@@ -179,14 +187,82 @@ seconds.
 
 | Module | Produces |
 |---|---|
-| `rhythms` | cosinor and Lomb-Scargle per cell, a matched-noise false-positive floor, a population phase test, and the non-parametric block — L5, M10, relative amplitude, onset, offset and the two stability measures |
-| `coupling` | lag profiles between two measurements of one cell, and phase agreement between cells |
-| `regimes` | a behavioural state per cell per frame, its dwell times and its transitions |
+| `rhythms` | configurable Circadian Workbench detrending and period methods per cell, a primary rhythm verdict, a matched-noise false-positive floor, a population phase test, and an optional fixed-day profile block — L5, M10, relative amplitude, onset, offset and the two stability measures |
+| `coupling` | lag profiles between two measurements of one cell, and phase agreement between cells using the rhythms module's selected Circadian Workbench estimator |
+| `regimes` | current-frame size crossed with movement from the preceding frame: low, medium or high on each axis, giving nine per-cell-frame subgroups and their transitions |
 | `recurrence` | whether each cell returns to states it has been in before, and whether it holds them |
 | `sequence_distance` | how alike two cells' state sequences are once one is allowed to run late |
 | `territory_shape` | the eventual territory against the cell that made it, per frame and per cell |
 | `walk` | step direction, turning angles, directional persistence and run lengths |
+| `trend` | robust and ordinary slopes per cell per measurement over the whole recording; it does not assume or remove a daily cycle |
 | `history` | the tracker's own record of why a name went missing, copied through rather than paraphrased |
+
+### Rhythm detection and period estimation
+
+Circadian Workbench is the scientific engine behind the `rhythms` module.
+The package crosses that boundary only through Circadian Workbench's public
+package root and its public `statistics` module. Motion Analysis keeps its
+existing rows and column names while the workbench owns the calculations.
+Think of `rhythms.csv` as the front page and `rhythm_methods.csv` as the full
+score sheet: the first gives each cell its configured overall verdict; the
+second keeps the answer from every requested method.
+
+The default comparison methods are Lomb-Scargle, chi-square and F periodograms.
+`period_estimation_method` independently chooses which method supplies the
+period, phase, amplitude and fit diagnostics in `rhythms.csv`; its default is
+`lomb`. `primary_rhythm_test` chooses the significance-bearing method that
+supplies the `rhythmic`, `arrhythmic` or `unknown` verdict and also defaults to
+`lomb`. A fit-only estimator therefore never gets treated as a significance
+test. Set `descriptive_cosinor` to `true` to request the legacy fixed-period
+cosinor columns; they remain descriptive and never supply the selected period
+or verdict.
+
+Set `daily_profile_measures` to `true` only for an explicit 24-hour question.
+It enables M10, L5, onset, offset, interdaily stability and intradaily
+variability through Circadian Workbench. These columns remain present but empty
+when the setting is false, which is the default.
+
+Every period method reported by the installed Circadian Workbench is selectable:
+Lomb-Scargle (`lomb`), chi-square (`chi_square`), F periodogram (`f`), extended
+JTK Cycle (`ejtk`), classic JTK Cycle (`jtk`), fast Fourier transform non-linear
+least squares (`fft_nlls`), maximum entropy spectral analysis (`mesa`),
+multi-harmonic Fourier fitting (`mfourfit`) and spectrum resampling
+(`spectrum_resampling`). `period_methods` controls the full comparison table and
+automatically includes the chosen estimator and significance test.
+
+Every figure that performs a fresh rhythm fit accepts the same shared controls:
+`--fit-method`, `--significance-method`, `--period-config`, the period bounds,
+all detrending settings, alpha, multiple-testing correction, minimum
+observations and minimum observed cycles. The visible defaults are a 2-48 hour
+search, alpha 0.05, 24 observations and three cycles. Method-specific settings
+go in `--period-config`, for example `{"nlls_max_components": 5}`. Correction
+applies to the significance method's p-values. Estimator uncertainty,
+components, failure reason, and the separate test result remain in the result
+tables.
+Hatching distinguishes a rhythmic trace with an unavailable period fit from
+a non-rhythmic trace. FFT-NLLS selection follows the requested search bounds;
+its legacy `nlls_circadian_min/max` settings narrow selection only when supplied.
+
+Detrending is selected with `detrend`: `none`, `running_mean`, `linear`,
+`polynomial`, `cubic`, legacy `bicubic`, `poly6`, `kernel`, `baseline`,
+amplitude-and-baseline (`amp_baseline`), a frequency filter (`frequency`),
+locally weighted smoothing (`lowess`), first differences (`first_difference`),
+a moving median (`moving_median`), a Savitzky-Golay smoother
+(`savitzky_golay`), Huber robust linear regression (`robust_linear`) or
+asymmetric least-squares smoothing (`asymmetric_least_squares`).
+`bicubic` and `cubic` both force a degree-3 polynomial in time; `poly6` forces
+degree 6. The generic polynomial degree, baseline window, valid-window share,
+kernel bandwidth, frequency limits, filter order, LOWESS point fraction and
+robust iterations, and asymmetric least-squares smoothness, asymmetry and
+iterations are controlled by the matching `detrend_*` settings in the main
+`rhythms` block. These settings are
+the package-wide defaults:
+recurrence states, within- and between-cell coupling, cell report cards, peak-aligned
+composites, tracker-channel checks, and generic rhythm matrices all inherit them.
+Detrending figures expose the complete shared `--detrend-*` control set and
+inherit unspecified settings from the main analysis. The
+exact Circadian Workbench version and applied detrend are written beside every
+rhythm result; recurrence and coupling tables also carry the applied choice.
 
 `python -m analysis modules` prints this list from the registry, with every
 column each one writes.
@@ -706,6 +782,59 @@ group, or no control named are printed by `conditions` and `run` and recorded in
 `conditions.json`, but they do not stop anything. Whether an experiment is worth
 running is the user's call; whether a movie is in the right group is not.
 
+## Metric groups
+
+A **metric group** is a name for a set of measured columns — `rhythm_signals`,
+`drift` — declared once in the configuration and used anywhere a list of columns
+is expected, written as `"@rhythm_signals"`. `metrics` is a declared option on 25
+of the 36 figures and on every contrast, so one group written once works
+everywhere, with no per-figure code.
+
+```json
+"metric_groups": {
+  "rhythm_signals": ["area_px", "corrected_mean", "solidity"],
+  "drift":          {"module": "trend", "role": "variable"}
+}
+```
+
+| form | what it means |
+| --- | --- |
+| a **list** | taken literally; every name must be a column some module says it writes |
+| a **selector** | `role` and/or `module`, ANDed, read off what the modules already declare |
+
+Then, wherever a list of columns goes:
+
+```json
+"contrasts": [{"name": "drift_everywhere", "table": "trend",
+               "metrics": ["@drift"], "...": "..."}],
+"figures":   {"rhythm-strength": {"options": {"metrics": "@rhythm_signals"}}}
+```
+
+References resolve when the configuration loads, so nothing downstream ever sees
+an unresolved `@`, and a group naming a column no module writes stops the load
+rather than producing a blank figure nobody can explain. A column that arrives
+twice — because it sits in two groups — is kept once, in its first position: a
+figure drawing one column twice is never what was meant, and a contrast testing
+it twice would correct across it twice.
+
+`run` records both halves in `figures.json`, the declaration as written and the
+columns it resolved to. A selector group means something different the day after
+a module gains a column, and a year later the only way to answer "what counted as
+drift in this figure" is to have written down what it came out as.
+
+Two things it deliberately will not do. **A group cannot be built out of another
+group** — one level, refused with a message, because nesting is a small feature
+and a large class of cycle bugs. **There is no `table` selector**: a module may
+write several tables and a `Column` declaration does not say which one it lands
+in, so selecting by table would be this package guessing.
+
+`role` on its own is blunter than it looks. Of 460 declared columns 90 are
+`morphology` and 82 are `reference`, and `stable`, `significant` and `invalid`
+are *states* rather than measurement families. Pair `role` with `module`, as
+`drift` does above. `python -m analysis doctor` prints every group resolved, with
+its column count, so a selector that quietly caught ninety columns is visible
+before anything is drawn.
+
 ## Contrasts
 
 Every p-value elsewhere in this package asks whether *one cell* has a rhythm.
@@ -770,6 +899,14 @@ blank on both counts.
 | `anova` | three or more, means | eta-squared |
 | `wilcoxon` | one window against another, same cells | median paired difference |
 | `paired_t` | the same, means | paired Hedges' g |
+| `signed_rank` | one group against zero | median across units |
+
+`signed_rank` is the odd one: it names **one** group and compares it against
+zero rather than against another group, and naming a second is refused rather
+than ignored. It exists because a slope, a change and a difference all have a
+meaningful zero — no drift, no change, no difference — so a table with one group
+in it still supports a real question. Everything else about it is the same: the
+same units, the same floor of three, the same family and correction.
 
 Which test runs is declared and **never chosen from the data**. Running a
 normality test and picking accordingly is a garden of forking paths with a
@@ -786,13 +923,13 @@ in a family must agree about `correction` and `alpha`, or the run refuses —
 whichever was read last would otherwise silently decide for both, and the
 corrected p-value is the number anyone quotes.
 
-Three floors are copied from `CircadianWorkbench` v0.5.0 with the source line
-cited in `analysis/contrasts.py`, and `analysis/test_contrasts.py` runs Hedges' g
-and both classical corrections through this module and through the workbench and
-requires the same answer: fewer than **three units** in any group is a refusal;
-zero within-group variance in *every* group is a refusal, because zero variance
-is not infinite evidence; and a scale-relative noise floor stops an effect size
-of 1e14 reaching a figure legend.
+Three guards now come directly from the public
+`circadian_workbench.statistics` contract: fewer than **three units** in any
+group is a refusal; zero within-group variance in *every* group is a refusal,
+because zero variance is not infinite evidence; and a scale-relative noise
+floor stops an effect size of 1e14 reaching a figure legend. Hedges' g,
+Bonferroni, Sidak and no-correction calls use the same shared contract;
+Benjamini-Hochberg remains Motion Analysis's own correction.
 
 ```
 python -m analysis contrasts outputs/<run> --config analysis_config.json
@@ -918,21 +1055,56 @@ that figure's own three or four options instead of all thirty-one. Run
 | flag | what it does |
 | --- | --- |
 | `--stem` | which movie in the run to draw, when the run holds more than one |
+| `--item` | which item of the run's plot plan to draw — see **The plot plan** |
 | `--identity` | which cell the report card draws |
 | `--hour-ticks` | hours between ticks on a time axis |
 | `--panels` | which panels of a multi-panel figure to draw, comma separated |
 | `--metrics` | which measured columns the figure draws, comma separated |
+| `--event-metric` | measured column used to rank the selected frames |
+| `--event-direction` | rank high values, low values, or the largest within-cell deviations |
+| `--top-events` | number of top-ranked frames retained per cell |
+| `--events` | names for user-selected events, comma separated |
+| `--event-times` | start time of each user-selected event window, in hours |
 | `--bins` | how many bands a histogram panel divides its range into |
 | `--size` | which column sets point size on a scatter; empty for one size |
+| `--line-width-metric` | per-cell numeric column mapped to trajectory line width; empty for one width |
+| `--line-width-range` | smallest and largest widths as multiples of the default trajectory width |
+| `--line-dash-metric` | per-cell column mapped to trajectory dashes; `rhythm_period_band` uses rhythm results |
 | `--cells` | identities to draw, or the count of longest-observed identities |
 | `--quantile` | observed-data quantile used to define an event |
 | `--window` | frames either side of an aligned event |
 | `--max-lag` | largest lag retained on a lag or displacement panel |
 | `--order` | row order for a raster or regime ribbon |
+| `--spatial-metric` | numeric measurement mapped through space; `radial_occupancy` is a derived shortcut |
+| `--reference-metric` | numeric reference measurement for within-cell timing comparisons |
+| `--snapshot-hours` | recording hours to draw, using nearest actual frames without interpolation |
+| `--snapshot-count` | number of snapshots; one shows the final frame unless exact hours are supplied |
+| `--show-history` | show the complete time trace rather than selected snapshots |
+| `--spatial-axis` | physical coordinate used to order cells: `x` or `y` |
+| `--spatial-centre` | use the soma or centroid for position and optional displacement |
+| `--spatial-panel-inches` | minimum width of each spatial panel in inches |
+| `--spatial-point-size` | area of a cell-position marker in points squared |
+| `--spatial-annotate` | label cell-position markers with their identities |
+| `--spatial-arrows` | overlay displacement since the preceding consecutive frame |
+| `--spatial-tracks` | overlay recorded cell paths on the detected-period map |
+| `--spatial-track-cells` | show tracks for rhythmic cells or all cells |
+| `--spatial-track-width` | track line width in points |
+| `--spatial-cmap` | colour map for selected spatial values |
+| `--spatial-neighbours` | nearest neighbours per cell used to define the spatial graph |
+| `--spatial-permutations` | whole-trace spatial permutations for the field-level comparison |
+| `--spatial-seed` | reproducible seed for spatial permutation tests |
+| `--max-inferred-fraction` | exclude cell-frame measurements above this tracker-reconstructed pixel fraction |
+| `--period-hours` | cycle length used to wrap phase displays, in hours |
+| `--period-bins` | period-band boundaries in hours, comma separated |
+| `--phase-group-hours` | period-group centres for separate timing maps; empty selects the largest group |
+| `--period-tolerance` | largest relative period difference allowed in a timing comparison |
+| `--timing-reference-hour` | recording hour at which relative phase is compared |
+| `--phase-coherence` | minimum circular agreement for a phase-map mixture or tissue reference |
 | `--normalise` | transition-matrix scaling: `row`, `column`, or `none` |
 | `--shuffles` | shuffled-time replicates used for a displayed null |
 | `--regime` | numbered regime used for a within-cell contrast |
-| `--contour` | persistent-core contour as a share of observed frames |
+| `--contour` | occupancy-frequency contour as a share of observed frames |
+| `--coverage-view` | coverage map shown: `final` or `stages` |
 | `--stages` | number of evenly spaced recording stages |
 | `--thresholds` | primary and alternate core/transient cut-offs |
 | `--rings` | number of Sholl rings retained for display |
@@ -940,20 +1112,72 @@ that figure's own three or four options instead of all thirty-one. Run
 | `--clusters` | number of sequence groups cut from a clustering tree |
 | `--dilation` | one or two measured contact radii |
 | `--min-hours` | minimum contact duration retained |
+| `--max-pairs` | maximum longest-contacting pairs shown in a pair ledger; `0` shows all |
+| `--rhythm-metric` | measured signal whose rhythm result is compared between cells |
+| `--min-coverage` | least share of a window a cell must be observed in before its windowed summary is drawn |
 | `--min-contested` | minimum identities required to show a contested pixel |
 | `--inferred-threshold` | share of an outline that must be reconstructed before a frame is drawn as reconstructed; `0` means any at all |
 | `--images` | how many image tiles across the top; `0` for none |
 | `--image-hours` | exact hours for the tiles, comma separated; beats `--images` |
 | `--cell-lut` | the LUT the cell images are displayed through |
 | `--trace-luts` | colour or LUT per trace, matched to `--metrics` in order |
+| `--image-filter` | display-only image filtering preset |
+| `--crop-padding` | pixels added around a selected cell crop |
+| `--display` | raw or detrended values in a trace matrix |
+| `--display-black-percentile` | lower display percentile mapped to black |
+| `--display-white-percentile` | upper display percentile mapped to white |
+| `--display-gamma` | display-only gamma correction |
+| `--display-gain` | gain on temporal image differences |
+| `--display-noise-multiple` | grain-removal threshold in background-noise units |
+| `--display-pad-frames` | neighbouring frames used by temporal image filtering |
+| `--display-pool-px` | spatial pooling width in pixels |
+| `--display-sharpness` | display-only sharpening strength |
+| `--display-spatial-sigma` | Gaussian spatial-filter width in pixels |
+| `--trace-layout` | arrange selected traces as a stack or an overlay |
+| `--trace-view` | draw raw or detrended trace values |
+| `--detrend` | Circadian Workbench baseline-removal method; unset inherits the main analysis |
+| `--detrend-window-hours` | Circadian Workbench baseline window; unset inherits the main analysis |
+| `--detrend-polynomial-degree` | degree used for polynomial baseline removal |
+| `--detrend-min-valid-fraction` | minimum valid fraction in a baseline window |
+| `--detrend-bandwidth-hours` | kernel baseline bandwidth in hours |
+| `--detrend-low-cut-hours` | longest period retained by frequency detrending |
+| `--detrend-high-cut-hours` | shortest period retained by frequency detrending |
+| `--detrend-filter-order` | order of the frequency detrending filter |
+| `--detrend-lowess-fraction` | fraction of valid observations in each locally weighted smoothing fit; unset derives it from the baseline window |
+| `--detrend-lowess-iterations` | robust reweighting passes used by locally weighted smoothing |
+| `--detrend-asls-smoothness` | curvature penalty for asymmetric least-squares smoothing; larger values make a smoother baseline |
+| `--detrend-asls-asymmetry` | weight assigned to observations above the asymmetric least-squares baseline; values below 0.5 favour a lower envelope |
+| `--detrend-asls-iterations` | reweighting passes used by asymmetric least-squares smoothing |
+| `--fit-method` | Circadian Workbench period method used for fitted curves or tests |
+| `--secondary-significance-method` | optional second rhythm test; when set, both tests must be significant |
+| `--period-min-hours` | shortest candidate period in a broad search |
+| `--period-max-hours` | longest candidate period in a broad search |
+| `--rhythmic-alpha` | significance threshold for a rhythm test |
+| `--multiple-testing` | correction applied across a family of rhythm tests |
+| `--correction-scope` | correct a rhythm matrix together or one metric at a time |
+| `--min-observations` | fewest finite observations required to test a trace |
+| `--min-cycles` | fewest observed cycles required for a confident period |
+| `--matrix-lut` | colour map for a result matrix |
+| `--column-label-rotation` | angle of matrix column labels in degrees |
+| `--column-label-wrap` | maximum matrix column-label width before wrapping |
+| `--profile-bins` | number of radial positions in a condensed profile |
+| `--annulus-support` | minimum available annulus fraction retained in a radial profile |
+| `--timing` | rhythm timing value used to order cells |
+| `--hues` | categorical columns used to split or colour a result |
+| `--density-lut` | colour map for density values |
+| `--density-summary` | optional summary drawn over a density map |
+| `--map-luts` | colour map assigned to each selected field map |
+| `--map-range` | colour range rule for selected field maps |
+| `--map-summary` | reduce a per-frame field-map measurement to one value per cell |
+| `--map-assignment` | combine overlapping occupants: `occupancy_weighted_mean` (default), `equal_mean`, `first`, `last`, or `most_frequent` |
 | `--outline` | colour of the outline drawn over each tile |
-| `--fit` | which traces carry the cosinor curve: a list, `all`, or empty for none |
+| `--fit` | which traces carry the selected estimator's fitted curve: a list, `all`, or empty for none |
 | `--header-x` | left edge of the title, subtitle and footnote - see **Placement** |
 | `--title-y` | title, measured down from the top edge |
 | `--subtitle-y` | subtitle, measured down from the top edge |
 | `--footnote-y` | footnote, measured up from the bottom edge |
 | `--draft` | write only the figure, flat, into `outputs/figures/` - see **Drafts** |
-| `--overlay` | draw the negative-space mask over the raw image |
+| `--overlay` | draw coverage classes over the raw image |
 
 `--metrics` means the same thing everywhere - which measured columns this page
 draws - but what it does with them follows the figure: a panel each on the report
@@ -964,6 +1188,47 @@ figure cannot use prints the ones it can.
 `--panels` names the parts of a page a figure can leave out, so any panel can be
 the whole figure. Asking for a panel a builder does not have prints the ones it
 does.
+
+Reusable matrix row ordering lives in `analysis/figures/matrix_ordering.py`.
+Time-by-cell rasters can use `principal_component` for the dominant whole-trace
+gradient, `spectral` for a similarity continuum, `onset,period` for absolute
+displayed onset followed by estimated period, or `period` alone. These methods
+only derive row positions: they never shift matrix columns or change the values
+drawn. Scalar matrix builders use the same module for stable multi-column sorts.
+
+Tissue tectonics has six canonical panels in this order: first coverage time,
+cumulative occupied time, unique cells per pixel, median or mean cell speed,
+area covered by cells with a significant corrected-intensity period, and tracker-recorded
+contact-separation areas. `--map-summary` chooses median or mean speed.
+
+For its speed and significant-period panels,
+`--map-assignment occupancy_weighted_mean` averages the cell values at each
+pixel, weighting each cell by the time it occupied that pixel. `equal_mean`
+counts each distinct occupant once instead. `first`, `last`, and
+`most_frequent` select one occupant's value; a tie in `most_frequent` selects
+the smaller identity. Missing measurements and background contribute no
+weight. `figure_data.csv` and the per-panel pixel tables record the combined
+values, contributing-cell counts and total weights.
+
+The intensity-period panel analyses each cell's `corrected_mean` intensity and
+explicitly defaults both estimation and significance to
+the Lomb-Scargle periodogram through Circadian Workbench, with the shared 2-48 h
+search and data-sufficiency controls. Significance uses raw probabilities by
+default. `--multiple-testing bh`, `--multiple-testing bonferroni`, or
+`--multiple-testing sidak` applies the requested correction;
+`--multiple-testing none` restores the default. The panel excludes unsupported tests,
+search-boundary estimates and records with fewer than the configured observed
+cycles of their own estimated period. Missing values do not establish biological
+arrhythmicity. `rhythm_map_fits.csv` and `statistics.csv` retain every estimate,
+raw and adjusted probability, applied setting, method, Workbench version and
+display exclusion. An averaged shared-pixel period summarizes contributing
+cells; it is not a rhythm detected at that pixel and does not imply a shared
+tissue clock.
+
+The split-event panel uses `contact_separate` rows from the tracker's optional
+`history_merge_split_events.csv`. Each event area is the union of its named
+cells' last connected and first separated footprints. It reports tracker
+contact-separation events, not biological cell division.
 
 A `--trace-luts` entry is either a flat colour - a theme role (`reporter`), a
 palette name, or a hex value - or the name of a colour map (`viridis`), in which
@@ -1043,14 +1308,14 @@ numbers it had just handed over.
 Two kinds of function in these files are not panels, and say so by their return
 type. A **key** - `colour_bar`, `inset_colour_bar`, `semantic_legend` - explains a
 mapping something else already recorded. A **derivation** - `path_segments`,
-`detrended_z`, `mechanism_colours`, `breakout_events` - takes no axes and draws
+`detrended_z`, `mechanism_colours`, `ranked_events` - takes no axes and draws
 nothing; it lives beside the panel it feeds.
 
 
 | file | panels |
 | --- | --- |
-| `panels/common.py` | the chart grammar - trace, cosinor curve, image tile and strip, raster, histogram, scatter with edge histograms, dumbbell, lollipop, reference lines, colour bar |
-| `panels/rhythms.py` | detrended trace raster, peak-time histogram, noise-floor dumbbell |
+| `panels/common.py` | the chart grammar - trace, cosinor curve, image tile and strip, raster, histogram, stacked histogram (also called a ridgeline), scatter with edge histograms, dumbbell, lollipop, forest and stacked forest, reference lines, colour bar |
+| `panels/rhythms.py` | detrended trace raster, peak-time histogram, noise-floor dumbbell, active-period spans |
 | `panels/motility.py` | trajectory map, step histogram, and the gap-cutting both depend on |
 | `panels/surveillance.py` | the tracker's motion-evidence channels and the colours they carry |
 | `panels/presence.py` | names on screen, unclaimed foreground, persistence raster, and the three presence states |
@@ -1069,11 +1334,56 @@ every figure reads, and holds a `RESIDUAL` block for the modules that have not
 declared theirs yet. A column in neither is still drawable —
 `some_new_readout_px` becomes "Some new readout (px)" — and a per-cell summary
 of a known column keeps that column's wording, so `turnover_index_median` is
-still "Pixels replaced".
+still "Footprint turnover fraction".
 
 Nothing here is loaded until a label is actually asked for, because building the
 vocabulary means importing every module, and a figure that labels no column
 should not pay for scikit-image.
+
+### The four pages that read the newest tables
+
+Figures 37 to 40 draw output that the metric-promotion and condition-testing
+work added and that nothing else looks at. Figures 37 and 38 require
+`daily_profile_measures: true`. Their vocabulary, expanded once:
+**RA** (relative amplitude) is the swing between the most-active ten hours of
+the day and the least-active five, scaled by their sum; **IS** (interdaily
+stability) is how alike one day is to the next; **IV** (intradaily variability)
+is how broken up the day is; **L5** and **M10** are those least- and most-active
+stretches and the hours they begin.
+
+**37, `rhythm-strength`** - which of the seven fitted signals carries a daily
+rhythm at all. A generic stacked histogram of RA per signal, an IS-against-IV scatter, and the
+signals ranked by median RA with the mean beside each row. Its footnote guards
+the middle panel: interdaily stability compares one day with the next, and on a
+recording under the configured `min_days_for_stability` every fit is flagged. The
+module writes the number and flags it rather than withholding it, so the page
+draws it and says the axis is a ranking, not a measurement.
+
+**38, `active-span`** - whether a cell's seven signals share one clock. One bar
+per cell per signal from onset to offset, an onset-agreement histogram, and a
+dumbbell from median L5 onset to median M10 onset. Its footnote carries the
+two things that would otherwise be misread: how many fits found no onset at
+all, and that hour 0 is where the recording's own day was cut rather than a
+time of day - these are slices in a dish and a slice cannot detect light.
+
+**39, `contrast-forest` (audit/review)** - every comparison the configuration declared, with
+its effect, its interval, and whether it survived the correction applied within
+its family. Refusals are drawn as sentences rather than as gaps, because a
+refused comparison and one nobody asked for are different things. Rows are
+blocked by scale - the effect kind *and* the unit of the metric - each block on
+its own axis, since a difference of 6.75 px and one of 1300 camera units cannot
+share a ruler. A run whose configuration declared no contrasts gets a page
+saying so rather than a refusal, so an honest single-group run does not fail the
+whole build.
+
+**40, `change-ledger`** - what changed in each cell between a baseline window
+and the next. For every metric and cell, the comparison-window median minus the
+baseline-window median is divided by that metric's median baseline across the
+retained cells. Metrics are ranked by the median of those scaled cell changes;
+the largest mover is opened up as one line per cell, followed by the spread
+behind those medians. Cells below `--min-coverage` of a window are dropped and
+counted. A metric whose baseline sits at or across zero stays in the table but
+off the axes because it cannot provide a stable common divisor.
 
 ### Adding a figure
 
@@ -1082,7 +1392,7 @@ in the package changes. `python -m analysis figures`, the `--help`, the option
 checking and the audited bundle all come from the declaration.
 
 ```python
-# analysis/figures/37_my_page.py
+# analysis/figures/41_my_page.py
 import sys
 from pathlib import Path
 
@@ -1093,7 +1403,7 @@ from panels import motility as motility_panels
 
 
 @figure(
-    number=37,
+    number=41,
     slug="my-page",                       # bundle folder, config key, catalogue
     summary="one line for `python -m analysis figures`",
     title="What is on the axes",          # may hold {placeholders}
@@ -1116,6 +1426,13 @@ def build(ctx: FigureContext) -> FigureResult:
 if __name__ == "__main__":
     run_figure("my-page")
 ```
+
+A `Table` may say whose it is. `scope="movie"` is the default and means
+`<run>/<stem>/tables`, which is what almost every table is: one movie measured on
+its own. `scope="run"` means the file belongs to the run rather than to any one
+movie, because it was made by comparing them - `statistics.csv` at the run root,
+and anything under `pooled/`. A page whose sources are *all* run-scoped never
+asks for a `--stem`, because there is no movie whose answer it is.
 
 What the declaration buys, none of which is written twice: `--help` lists these
 options and refuses any other; `--panels` names these panels and refuses any
@@ -1147,20 +1464,50 @@ only the drawing has. Build **without** `--draft` once a figure is settled: what
 a draft skips is exactly what makes a figure checkable later, so a draft is not
 meant to leave the machine.
 
-`build_all` passes on only what every figure takes — `--stem` and `--draft`. A
+`build_all` passes on only what every figure takes — `--stem` and `--draft` —
+and handles `--results-only` or `--review-only` itself. A
 figure's own options belong to that figure: `--bins` means something on six of
 the thirty-six and nothing on the rest, so giving it to all of them is refused
 rather than silently ignored by thirty. Tune one figure by running its builder
 alone, and keep the result by putting it in the `figures` block of the
 configuration, where it survives into the run folder.
 
+Continuous value axes can use the shared tick rule instead of Matplotlib's
+data-dependent guess. Its default follows PyFLASH: five ticks, a visible zero
+start, and an outer limit rounded upward to a multiple of 5 in the second
+significant figure. A signed axis is symmetric around zero. The rule is set in
+the theme and therefore travels with the run:
+
+```json
+"theme": {
+  "value_tick_count": 5,
+  "value_tick_round_to": 5,
+  "value_tick_start": 0,
+  "colour_bar_width_inches": 0.18,
+  "colour_bar_height_inches": 2.2,
+  "colour_bar_gap_inches": 0.16
+}
+```
+
+`value_tick_count` changes the density, `value_tick_round_to` changes the
+rounding grid, and `value_tick_start` changes the anchor. Panels whose axis is a
+continuous measurement call this one rule; categorical and image axes keep
+their declared ticks.
+
+Continuous colour-map keys also share one physical shape. Their width, height
+and clearance are set by `colour_bar_width_inches`,
+`colour_bar_height_inches` and `colour_bar_gap_inches`, so a key beside a small
+map cannot collapse into a hairline.
+
 Ticks on an hours axis land on **day boundaries**, not on round decimals.
 Matplotlib counts in tens, so a two-day recording gets ticks at 10, 20, 30, 40
 and 50 h - none of which is a time of day, and a reader comparing a peak at 21 h
 with one at 45 h has nothing to line them up against. The step defaults to 24 h
 and must be a factor or a multiple of a day (1, 2, 3, 4, 6, 8, 12, 24, 48, 72),
-so every tick sits at the same clock time whichever you pick. Anything else -
-10 h, say - is refused before the figure draws.
+so every tick sits at the same clock time whichever you pick. The aligned tick
+immediately before the first observation is included, so a trace beginning at
+0.5 h visibly starts at 0 h. Anything else - 10 h, say - is refused before the
+figure draws.
 
 ```powershell
 python analysis\figures\05_cell_report_card.py outputs\a02_my_run --hour-ticks 12
@@ -1170,8 +1517,11 @@ For every figure, set it in the theme block instead, where it travels with the
 run in `theme.json`:
 
 ```json
-"theme": { "hours_per_tick": 12 }
+"theme": { "hours_per_tick": 12, "hours_tick_start": 0 }
 ```
+
+`hours_tick_start` shifts the alignment when the experiment's time origin is
+not zero. A figure's `--hour-ticks` option overrides only the spacing.
 
 The one exception is the peak-time histogram in figure 1, which is 24 h wide and
 so keeps a 6 h step of its own - still a factor of a day - until a step is
@@ -1184,6 +1534,91 @@ dataset is calibrated are read from the run manifest rather than typed into a
 caption, because a typed one goes stale the first time somebody changes a
 setting. If you replace a subtitle, you replace those too - it is your sentence
 from then on.
+
+## The plot plan
+
+The `figures` block is keyed by slug, so a figure gets one specification per run:
+figure 5 can be drawn for one cell and no more, and drawing it for cells 7, 12
+and 40 means three runs or three hand-typed command lines. A **plan** lifts that.
+It is a list of **requests** in the `plots` block; each names a figure and,
+optionally, a setting to vary; and the package expands it into **items**, one per
+figure that will actually be drawn, each with a unique name.
+
+```json
+"plots": [
+  {"figure": "rhythm-strength", "for_each": {"metrics": "@rhythm_signals"}},
+  {"figure": "rhythm-strength", "options":  {"metrics": "@rhythm_signals"},
+   "as": "rhythm-strength/all-signals"},
+  {"figure": "cell-report-card", "for_each": {"identity": [7, 12, 40]},
+   "as": "report-card/cell-{identity}",
+   "footnote": "One of the three cells observed in every frame."}
+]
+```
+
+**`for_each` is one figure per value. `options` is one figure with all of them on
+it.** The first request above is seven pages; the second is one page with seven
+signals on it. That difference is the whole design, and it is a key of its own
+rather than a shape — the alternative is to give one key three meanings
+distinguished by how deeply its value is nested, which cannot be read at a glance
+and cannot be typed reliably.
+
+Expansion happens once, when the configuration is read, before any builder runs.
+That is what lets a builder keep the signature it has — one run folder, one
+resolved set of options, one page — and what lets a mistake be caught before a
+run measures anything. A builder never learns that a plan exists.
+
+A request may set any option the figure declares, plus `--stem` and `--panels`,
+and any of the five text slots, which then apply to every item it produces.
+
+**Naming.** An item is `<slug>/<key>=<value>` over the keys the request varies,
+in `for_each` order, each value lower-cased with runs of other characters
+replaced by `-`. A request that produces exactly one item is named after its
+figure. `as` overrides both and may carry `{key}` for any key the request varies.
+Two items with one name are **refused**, naming both requests: the second would
+otherwise overwrite the first's bundle, and the plan would report two figures
+drawn where one folder exists.
+
+Several `for_each` keys take the cross product, with the last key varying
+fastest, so the order the figures appear in on disk is predictable.
+
+The bundle folder *is* the item — `<run>/figures/rhythm-strength/metrics=solidity/`.
+A builder is told which item it is drawing with `--item`, and its figure file is
+named after the item, flattened, because a folder can carry a `/` and a filename
+cannot.
+
+### `python -m analysis plots`
+
+```powershell
+python -m analysis doctor --config analysis_config.json    # every item, and every reason one cannot be drawn
+python -m analysis plots outputs\g02_my_run --dry-run      # what would be drawn, and how many
+python -m analysis plots outputs\g02_my_run                # draw them
+python -m analysis plots outputs\g02_my_run --only report-card/cell-7
+```
+
+`--only` takes an item name or a figure slug and is repeatable; an unknown value
+is refused with the names that do exist. `--plan <file>` draws a plan file
+against a run measured without one and records what it drew in
+`<run>/figures/plan.json`, so a bundle the run's own configuration does not
+mention still says where it came from. `--draft` passes straight through to each
+builder.
+
+Every run of the command writes `<run>/figures/plan.csv` — one row per item, with
+the name, the figure, the settings that varied, `drawn` or `failed`, the seconds
+it took, the bundle, and the last line of the builder's output when it failed.
+It is written as the queue progresses, so a queue that dies half way through
+still leaves a record of what got drawn, and a `--only` pass keeps the rows it is
+not about.
+
+`doctor` is what makes this cheap. It expands the plan, lists every item, and
+catches the expensive failure before anything is measured: a queued figure whose
+module is not in `enabled_modules` reads a table that will not exist, and the
+traceback an hour later names a missing file rather than the one-line omission
+that caused it.
+
+By default, `build_all.py` still draws every figure once. There are two ways to
+draw figures and, until they are folded together, that is deliberate: a plan
+draws what you asked for, while `build_all` draws everything or one declared
+purpose with `--results-only` or `--review-only`.
 
 ## The aesthetic engine
 
@@ -1297,6 +1732,50 @@ visible choice rather than something buried in a measurement function.
 
 ## Known limits
 
+- **A plan draws figures; it does not measure anything.** A figure in a plan
+  whose module is switched off is refused by `doctor`, but a figure drawn from a
+  table measured under different settings is not. The run folder is the unit of
+  provenance, not the plan: two bundles produced by one plan against two runs are
+  no more comparable than any other two bundles, and the plan they share says
+  nothing about whether they are.
+- **Items are drawn one at a time and nothing resumes a partial queue.** A
+  two-hundred-item plan is a two-hundred-item wait — 15 to 25 seconds each on the
+  reference dataset — and an item that fails part way through is recorded in
+  `plan.csv` but has to be re-run by hand with `--only`. Nothing reads that
+  manifest back yet. On a synced folder the failures will not all be yours:
+  eight of forty builds on run `g02` failed on the atomic rename of a temporary
+  SVG because Dropbox held the file, and the fix is to re-run them, not to
+  retry in a loop and hide it.
+- **Interdaily stability needs more days than this recording has.** It compares
+  one day with the next, and the reference dataset covers 2.04 of them against a
+  `min_days_for_stability` of 3. Every fit is therefore flagged
+  `stability_underdetermined`, and the rhythms module deliberately writes the
+  number anyway rather than withholding it: two days is one comparison, which is
+  computable and weak. Figure 37 draws it and says on its face that the axis is
+  a ranking. Nothing stops a reader taking a value off `rhythms.csv` without
+  that sentence.
+- **Nothing here tells drift from biology or from a rhythm.** A cell that is
+  larger and dimmer later in a recording is equally consistent with a real
+  change, photobleaching, focus drift, or a rhythm sampled at an unlucky phase.
+  The `trend` module reports only robust and least-squares slopes. Period
+  estimation and rhythmic detrending belong to the configurable Circadian
+  Workbench analysis; this module does not assume or remove a 24-hour cycle.
+- **A slope on a two-day recording is fitted, not observed.** `trend` writes
+  robust and ordinary slopes per cell per measurement. Their disagreement
+  reveals sensitivity to outliers, but neither separates drift from rhythm.
+- **A test at `unit: cell` on one movie is pseudoreplication and says so.** The
+  drift contrasts in the example configuration compare 75 cells from a single
+  slice against zero. That describes the recording, not the preparation and not
+  the treatment, and at that n almost any consistent change reaches
+  significance. The sentence is written into every row's `methods` column; it is
+  not a substitute for a second movie.
+- **A fractional change needs a baseline safely away from zero.** Figure 40
+  scales each metric by the median baseline across cells so thirty-seven
+  different units can share an axis. Where that baseline sits at or across zero
+  the scaling is meaningless - `dff` is centred on zero by construction - so
+  those metrics are kept in the table and left off the axes. The rule is
+  mechanical (median and lower quartile both positive) and will occasionally
+  exclude a metric a person would have kept.
 - Nothing checks that a channel is the channel you meant. `description` is free
   text and `channel_index` is a number; point them at the wrong plane and the
   run produces a full set of confident numbers about the wrong dye. Every
@@ -1485,8 +1964,8 @@ visible choice rather than something buried in a measurement function.
   to within 0.03 branches per cell-frame on the pinned movie, so the contraction
   turned out not to matter for the count - but it does matter for length, since
   splitting at junction pixels shortens every segment by about two of them.
-  `skeleton_branches` is left exactly as it was because `regimes` clusters on
-  it, and changing it would move every regime in every run ever made.
+  `skeleton_branches` is retained beside `branch_count` because the two encode
+  different branch definitions; the default subgroup classifier reads neither.
 - `branch_order` is measured from the brightness-weighted centre of the cell,
   which lands outside the outline in 2.6% of cell-frames - a C-shaped cell can
   put its own centre in the gap. `soma_centre_inside` flags those rather than
@@ -1553,25 +2032,20 @@ visible choice rather than something buried in a measurement function.
   are equally unhelpful. M10 is weak here for the same reason — ten hours is
   nearly half the record.
 
-- **Three amplitudes live on `rhythms.csv` and they are three different
+- **Three optional amplitudes can live on `rhythms.csv` and they are three different
   numbers.** `relative_amplitude` is `(M10 - L5) / (M10 + L5)`, the busiest ten
   hours of the average day against the quietest five, which is what the field
   means by the term. `cosinor_relative_amplitude` is a fitted amplitude over a
   mean level at the period the fit was told to assume, and
-  `free_cosinor_relative_amplitude` is the same ratio at the period the search
-  found. None of the three is labelled "relative amplitude" on an axis; each
+  `free_cosinor_relative_amplitude` is the same ratio at the period the selected
+  estimator found. None of the three is labelled "relative amplitude" on an axis; each
   label says what it divides.
 
-- **Onset and offset come from ClockLab's template method**, transcribed from
-  the lab's own `CircadianWorkbench` v0.5.0 along with L5, M10 and the two
-  stability measures rather than derived here. `analysis/test_nonparametric_
-  circadian.py` runs one trace through both implementations and requires the
-  same answer, so the copy cannot drift silently. Three things were adapted and
-  each is marked in `analysis/modules/rhythms.py`: the day is folded on
-  `hours % 24` because there is no clock, a bin is a mean rather than a sum
-  because these are levels rather than counts, and no bin is excluded as a
-  structural zero because a turnover of zero is a real measurement rather than
-  an unbroken beam.
+- **When `daily_profile_measures` is enabled, onset, offset, L5, M10 and stability measures come from Circadian
+  Workbench.** `analysis/circadian.py` sends the timestamped trace through its
+  public non-parametric, daily-measures and time-series actions, then maps the
+  returned values onto this package's existing columns. No copied formula is
+  maintained here.
 
 - **Pooling is a concatenation, not a check.** Nothing verifies that two movies
   were measured with the same module settings, the same frame interval or the
@@ -1605,3 +2079,12 @@ visible choice rather than something buried in a measurement function.
   is a legitimate thing to declare and the difference between them is computed
   the same way as any other. `window_frames` and `window_coverage` travel in the
   windowed summary for that reason; nothing enforces that they are comparable.
+
+### Additional spatial time-series figures
+
+Six additional figures show within-cell changes across the tissue, spatial
+period and peak-time maps, spatially ordered traces, reporter-to-shape timing,
+neighbour coordination, and gaps in combined coverage alongside the canonical
+six-panel `tissue-tectonics` figure. See [the spatial plot guide](figures/SPATIAL_PLOTS.md)
+for main-analysis configuration, shared detrending controls, generic drawing
+functions, scientific interpretation, and redraws that reuse saved results.

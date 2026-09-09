@@ -5,17 +5,10 @@ cells that answered; presence records who was asked, so an empty seat can be
 told apart from a person who was never on the list.
 
 That distinction is the only reason these panels are not general charts. All
-three are drawn in fixed colours - a name on screen, a cell inside its own
-lifespan with no name, and time outside a cell's life at all - and those states
-must mean the same thing on every panel, or the reader learns a colour on one
-and misreads it on the next.
-
-A fourth state, ``named_inferred``, splits the first one: the name is on screen,
-but which cell owns those pixels was decided by the tracker's reconstruction
-rather than by seeing that cell there. It is opt-in. A run with no provenance
-draws exactly the three-state figure it always drew, and the three original
-codes keep the integers they have always had, so no matrix already written to a
-bundle changes meaning.
+three are drawn in fixed colours - black for a name on screen, orange for a
+temporary absence inside its lifespan, and grey before first appearance or
+after last appearance. Tracker explanations are symbols over the orange state,
+not extra colours in the state raster.
 """
 
 from __future__ import annotations
@@ -29,34 +22,45 @@ from . import common
 from ._contract import PanelResult
 
 __all__ = ["STATE_CODES", "STATE_ROLES", "STATE_LABELS", "BASE_STATES",
-           "PROVENANCE_STATES", "mechanism_colours", "on_screen",
-           "unclaimed_area", "persistence_raster", "gap_mechanism_strip",
-           "lifespan_bars"]
+           "mechanism_colours", "mechanism_label", "on_screen",
+           "unclaimed_area", "persistence_values", "persistence_events",
+           "persistence_raster", "gap_mechanism_strip", "lifespan_bars"]
 
 #: The states, in the order the raster's colour map expects them. The first
 #: three integers are fixed for good: changing one would silently reinterpret
 #: every matrix already written to a bundle.
 STATE_CODES: dict[str, int] = {
-    "outside_lifespan": 0, "named": 1, "unclaimed": 2, "named_inferred": 3,
+    "outside_lifespan": 0, "named": 1, "unclaimed": 2,
 }
 
 STATE_ROLES: dict[str, str] = {
-    "outside_lifespan": "missing", "named": "named", "unclaimed": "unclaimed",
-    "named_inferred": "inferred",
+    "outside_lifespan": "missing", "named": "ink", "unclaimed": "unclaimed",
 }
 
 STATE_LABELS: dict[str, str] = {
-    "named": "name on screen",
-    "named_inferred": "name on screen, ownership reconstructed",
-    "unclaimed": "gap inside the cell's own lifespan",
+    "named": "present on screen",
+    "unclaimed": "temporary gap",
     "outside_lifespan": "before first appearance / after last",
 }
 
 #: What a panel draws unless it is told otherwise - the three-state figure.
 BASE_STATES: tuple[str, ...] = ("outside_lifespan", "named", "unclaimed")
 
-#: The same, split by whether the outline was observed or reconstructed.
-PROVENANCE_STATES: tuple[str, ...] = BASE_STATES + ("named_inferred",)
+
+MECHANISM_LABELS: dict[str, str] = {
+    "blue_red_motion_link_candidate": "motion-linked identity candidate",
+    "distant_alias_risk": "distant identity alias risk",
+    "local_raw_supported_dropout": "raw signal supports a missed outline",
+    "long_unproven_gap": "long gap without supporting evidence",
+    "same_host_merge_hiding": "cell hidden inside the same merged object",
+    "unresolved": "tracker could not classify the gap",
+}
+
+
+def mechanism_label(value: Any) -> str:
+    """A tracker's compact mechanism code in words suitable for a legend."""
+    name = str(value)
+    return MECHANISM_LABELS.get(name, name.replace("_", " "))
 
 
 def mechanism_colours(mechanisms: Sequence[Any], theme: Any) -> dict[str, str]:
@@ -103,7 +107,7 @@ def on_screen(
     y_label: str = "Cell names\non screen",
     named_label: str = "name on screen",
     expected_label: str = "inside their own lifespan",
-    gap_label: str = "exists, but not named this frame",
+    gap_label: str = "temporarily off screen",
     show_x: bool = True,
 ) -> PanelResult:
     """How many names carry a mask each frame, against how many cells exist.
@@ -154,33 +158,192 @@ def unclaimed_area(
     values: Sequence[float],
     theme: Any,
     *,
+    claimed: Sequence[float] | None = None,
     hour_ticks: float | None = None,
     x_label: str = "Hours from start of recording",
-    y_label: str = "Unclaimed\nforeground (px)",
+    y_label: str = "Detected\nforeground (px)",
+    claimed_label: str = "foreground claimed by a cell identity",
+    unclaimed_label: str = "foreground without a cell identity",
     show_x: bool = True,
 ) -> PanelResult:
-    """Foreground the pipeline agrees is cell signal but attributes to no name.
+    """Claimed and unclaimed detected foreground on one common pixel scale.
 
-    Countable only because those pixels are written to their own stack instead
-    of being pushed onto the nearest identity. A pipeline that assigned them
-    would produce this same figure as a flat zero and be wrong.
+    With ``claimed``, the filled stack shows the whole detected foreground and
+    keeps the unclaimed band in its proper visual proportion. Without it, the
+    function retains its older single-series form for callers that only have an
+    unclaimed stack.
     """
     hours = np.asarray(hours, dtype=float)
     values = np.asarray(values, dtype=float)
 
-    ax.fill_between(hours, 0, values, color=theme.colour("unclaimed"), alpha=0.35, linewidth=0)
-    ax.plot(hours, values, color=theme.colour("unclaimed"), linewidth=theme.stroke("emphasis"))
+    data = {"hours": hours, "unclaimed_px": values}
+    if claimed is None:
+        ax.fill_between(
+            hours, 0, values, color=theme.colour("unclaimed"), alpha=0.35,
+            linewidth=0, label=unclaimed_label,
+        )
+        ax.plot(
+            hours, values, color=theme.colour("unclaimed"),
+            linewidth=theme.stroke("emphasis"),
+        )
+        ceiling = float(np.nanmax(values))
+    else:
+        claimed_values = np.asarray(claimed, dtype=float)
+        if claimed_values.shape != values.shape:
+            raise ValueError("claimed and unclaimed foreground must have the same length")
+        total = claimed_values + values
+        ax.fill_between(
+            hours, 0, claimed_values, color=theme.colour("named"), alpha=0.18,
+            linewidth=0, label=claimed_label,
+        )
+        ax.fill_between(
+            hours, claimed_values, total, color=theme.colour("unclaimed"), alpha=0.72,
+            linewidth=0, label=unclaimed_label,
+        )
+        ax.plot(
+            hours, claimed_values, color=theme.colour("named"),
+            linewidth=theme.stroke("emphasis"),
+        )
+        ax.plot(
+            hours, total, color=theme.colour("unclaimed"),
+            linewidth=theme.stroke("line"),
+        )
+        data.update({"claimed_px": claimed_values, "foreground_px": total})
+        ceiling = float(np.nanmax(total))
 
     ax.set_ylabel(y_label)
     ax.set_xlim(float(hours.min()), float(hours.max()))
-    ax.set_ylim(0, float(np.nanmax(values)) * 1.18 or 1.0)
+    ax.set_ylim(0, ceiling * 1.12 or 1.0)
     ax.set_xticks(theme.hour_ticks(float(hours.min()), float(hours.max()), hour_ticks))
     if show_x:
         ax.set_xlabel(x_label)
     else:
         ax.set_xticklabels([])
-    return PanelResult(
-        data=pd.DataFrame({"hours": hours, "unclaimed_px": values}), axes=ax)
+    return PanelResult(data=pd.DataFrame(data), axes=ax)
+
+
+def persistence_values(
+    frame: Any,
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, list[int]]:
+    """Prepare one three-state persistence raster from long-form presence rows.
+
+    Returns the exact plotted long table, matrix, frame hours and identity order.
+    Keeping this preparation beside the renderer makes the standalone raster and
+    any composite page use the same row ordering and state codes.
+    """
+    presence = pd.DataFrame(frame).copy()
+    required = {"identity", "frame_index", "hours", "state",
+                "first_frame_index", "last_frame_index"}
+    missing = required - set(presence)
+    if missing:
+        raise ValueError(
+            "persistence_values needs " + ", ".join(sorted(missing)))
+    unknown = set(presence["state"].dropna().astype(str)) - set(STATE_CODES)
+    if unknown:
+        raise ValueError("unknown persistence states: " + ", ".join(sorted(unknown)))
+
+    order = (
+        presence.groupby("identity")[["first_frame_index", "last_frame_index"]]
+        .first().sort_values(["first_frame_index", "last_frame_index"]).index.tolist()
+    )
+    row_of = {identity: row for row, identity in enumerate(order)}
+    presence["row_position"] = presence["identity"].map(row_of).astype(int)
+    presence["state_code"] = presence["state"].map(STATE_CODES).astype(int)
+    presence = presence.sort_values(["row_position", "frame_index"])
+    matrix = (
+        presence.pivot(index="row_position", columns="frame_index", values="state_code")
+        .sort_index().to_numpy(float)
+    )
+    hours = (
+        presence.groupby("frame_index")["hours"].first().sort_index().to_numpy(float)
+    )
+    return presence, matrix, hours, [int(identity) for identity in order]
+
+
+def persistence_events(
+    presence: Any,
+    gap_frames: Any = None,
+    lifespans: Any = None,
+) -> pd.DataFrame:
+    """One marker per temporary-absence interval and silent ending.
+
+    Every orange run gets one marker at its temporal midpoint. Where the
+    tracker's Gantt evidence names a mechanism, that exact code is retained in
+    ``mechanism`` and translated only for ``event_label``. Silent mid-field
+    endings receive the cross used by the lifespan chart.
+    """
+    frame = pd.DataFrame(presence).copy()
+    required = {"identity", "frame_index", "hours", "state", "row_position"}
+    missing = required - set(frame)
+    if missing:
+        raise ValueError(
+            "persistence_events needs " + ", ".join(sorted(missing)))
+
+    history = pd.DataFrame(gap_frames).copy() if gap_frames is not None else pd.DataFrame()
+    if not history.empty:
+        if "still_missing_in_accepted_labels" in history:
+            history = history[history["still_missing_in_accepted_labels"].astype(bool)]
+        keep = [column for column in ("identity", "frame_index", "mechanism")
+                if column in history]
+        if {"identity", "frame_index", "mechanism"}.issubset(keep):
+            frame = frame.merge(
+                history[keep].drop_duplicates(["identity", "frame_index"]),
+                on=["identity", "frame_index"], how="left",
+            )
+    if "mechanism" not in frame:
+        frame["mechanism"] = None
+
+    gaps = frame[frame["state"] == "unclaimed"].copy()
+    rows: list[dict[str, Any]] = []
+    if not gaps.empty:
+        gaps = gaps.sort_values(["identity", "frame_index"])
+        new_run = (
+            gaps.groupby("identity")["frame_index"].diff().ne(1)
+            | gaps["identity"].ne(gaps["identity"].shift())
+        )
+        gaps["event_run"] = new_run.groupby(gaps["identity"]).cumsum().astype(int)
+        for (identity, event_run), group in gaps.groupby(["identity", "event_run"]):
+            named = group["mechanism"].dropna().astype(str)
+            mechanism = named.mode().iat[0] if not named.empty else None
+            label = (mechanism_label(mechanism) if mechanism is not None
+                     else "temporary absence, no recorded cause")
+            rows.append({
+                "identity": int(identity),
+                "row_position": int(group["row_position"].iat[0]),
+                "event_class": "temporary_absence",
+                "event_label": label,
+                "mechanism": mechanism,
+                "start_frame_index": int(group["frame_index"].min()),
+                "end_frame_index": int(group["frame_index"].max()),
+                "start_hour": float(group["hours"].min()),
+                "end_hour": float(group["hours"].max()),
+                "hours": float(group["hours"].mean()),
+            })
+
+    life = pd.DataFrame(lifespans).copy() if lifespans is not None else pd.DataFrame()
+    if (not life.empty and {"identity", "silent_nonborder_ending"}.issubset(life)):
+        silent = set(life.loc[life["silent_nonborder_ending"].astype(bool), "identity"])
+        endings = (
+            frame[(frame["identity"].isin(silent)) & (frame["state"] == "named")]
+            .sort_values("frame_index").groupby("identity").tail(1)
+        )
+        for _, ending in endings.iterrows():
+            rows.append({
+                "identity": int(ending["identity"]),
+                "row_position": int(ending["row_position"]),
+                "event_class": "silent_ending",
+                "event_label": "silent ending away from the field edge",
+                "mechanism": None,
+                "start_frame_index": int(ending["frame_index"]),
+                "end_frame_index": int(ending["frame_index"]),
+                "start_hour": float(ending["hours"]),
+                "end_hour": float(ending["hours"]),
+                "hours": float(ending["hours"]),
+            })
+    columns = ["identity", "row_position", "event_class", "event_label",
+               "mechanism", "start_frame_index", "end_frame_index",
+               "start_hour", "end_hour", "hours"]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def persistence_raster(
@@ -191,37 +354,34 @@ def persistence_raster(
     *,
     hour_ticks: float | None = None,
     legend: bool = True,
-    states: Sequence[str] = BASE_STATES,
+    events: Any = None,
+    event_legend: bool = True,
     x_label: str = "Hours from start of recording",
     y_label: str = "Cell, ordered by first appearance",
 ) -> PanelResult:
-    """One row per cell, one column per frame, coloured by state.
+    """One row per cell and frame in the fixed black-orange-grey state key.
 
     The matrix holds the codes in :data:`STATE_CODES`. Rows sorted by first
     appearance turn the arrival of cells into a clean diagonal edge, so a pale
     wedge at the bottom left reads as cells that had not arrived rather than as a
     run of failures.
 
-    ``states`` says which states this matrix may contain, and must be the codes
-    ``0..len(states) - 1``. Pass :data:`PROVENANCE_STATES` to split a name on
-    screen into one attributed by observation and one attributed by the
-    tracker's reconstruction; the default keeps the three-colour figure exactly
-    as it was.
-
-    What the panel still does not say is *why* a name is absent. A merged object
-    carrying one number instead of two, an outline that fell below threshold and
-    a cell that genuinely left all draw the same colour, which is what
-    :func:`gap_mechanism_strip` is for.
+    ``events`` may add one symbol per interval without adding a fourth state
+    colour. It is a table with ``hours``, ``row_position`` and ``event_label``;
+    temporary absences receive stable category symbols and a
+    ``silent_ending`` event receives a cross.
     """
     from matplotlib.colors import ListedColormap
+    from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
     matrix = np.asarray(matrix, dtype=float)
     hours = np.asarray(hours, dtype=float)
-    order = sorted(states, key=STATE_CODES.get)
-    if [STATE_CODES[state] for state in order] != list(range(len(order))):
-        raise ValueError(
-            f"states must be a contiguous run of codes from 0, got {order}")
+    order = list(BASE_STATES)
+    finite = matrix[np.isfinite(matrix)]
+    unknown = sorted(set(finite.astype(int)) - set(STATE_CODES.values()))
+    if unknown:
+        raise ValueError(f"unknown persistence state codes: {unknown}")
 
     drawn = common.raster(
         ax, matrix, theme, hours=hours,
@@ -235,12 +395,8 @@ def persistence_raster(
     ax.set_yticklabels(["1", str(matrix.shape[0])])
 
     if legend:
-        # Reading order, not code order: the two "on screen" states sit next to
-        # each other so the split between them is the first thing seen.
-        shown = [state for state in
-                 ("named", "named_inferred", "unclaimed", "outside_lifespan")
-                 if state in order]
-        ax.legend(
+        shown = ("named", "unclaimed", "outside_lifespan")
+        state_legend = ax.legend(
             handles=[
                 Patch(facecolor=theme.colour(STATE_ROLES[state]), label=STATE_LABELS[state])
                 for state in shown
@@ -250,11 +406,71 @@ def persistence_raster(
             frameon=False, fontsize=theme.size("caption"),
             handlelength=1.6, columnspacing=1.6,
         )
+        ax.add_artist(state_legend)
+
+    event_frame = pd.DataFrame(events).copy() if events is not None else pd.DataFrame()
+    event_styles: dict[str, str] = {}
+    if not event_frame.empty:
+        needed = {"hours", "row_position", "event_label"}
+        missing = needed - set(event_frame)
+        if missing:
+            raise ValueError(
+                "persistence events need " + ", ".join(sorted(missing)))
+        classes = (event_frame["event_class"].astype(str)
+                   if "event_class" in event_frame
+                   else pd.Series("temporary_absence", index=event_frame.index))
+        ordinary = sorted(event_frame.loc[
+            classes != "silent_ending", "event_label"
+        ].astype(str).unique())
+        marker_cycle = ("o", "s", "^", "D", "v", "P", "h", "*")
+        event_styles = {
+            label: marker_cycle[index % len(marker_cycle)]
+            for index, label in enumerate(ordinary)
+        }
+        if "event_class" in event_frame and (
+                event_frame["event_class"] == "silent_ending").any():
+            event_styles["silent ending away from the field edge"] = "x"
+
+        handles = []
+        for label in ordinary:
+            rows = event_frame[event_frame["event_label"].astype(str) == label]
+            marker = event_styles[label]
+            ax.scatter(
+                rows["hours"], rows["row_position"], marker=marker,
+                s=theme.size("caption") ** 2 * 0.34,
+                facecolors=theme.colour("page"), edgecolors=theme.colour("ink"),
+                linewidths=theme.stroke("line") * 0.55, zorder=4,
+            )
+            handles.append(Line2D(
+                [], [], marker=marker, linestyle="none",
+                markerfacecolor=theme.colour("page"),
+                markeredgecolor=theme.colour("ink"), label=label,
+            ))
+        if "event_class" in event_frame:
+            rows = event_frame[event_frame["event_class"] == "silent_ending"]
+            if not rows.empty:
+                ax.scatter(
+                    rows["hours"], rows["row_position"], marker="x",
+                    s=theme.size("caption") ** 2 * 0.42,
+                    color=theme.colour("ink"), linewidths=theme.stroke("line") * 0.7,
+                    zorder=5, clip_on=False,
+                )
+                handles.append(Line2D(
+                    [], [], marker="x", linestyle="none", color=theme.colour("ink"),
+                    label="silent ending away from the field edge",
+                ))
+        if event_legend and handles:
+            ax.legend(
+                handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
+                ncol=1, frameon=False, fontsize=theme.size("caption"),
+                title="Tracker events", title_fontsize=theme.size("caption"),
+            )
     named = {code: state for state, code in STATE_CODES.items()}
     table = drawn.data.rename(columns={"value": "state_code"})
     table["state"] = table["state_code"].map(named)
     return PanelResult(data=table, axes=ax,
-                       extra={"handle": drawn.extra["handle"]})
+                       extra={"handle": drawn.extra["handle"],
+                              "event_styles": event_styles})
 
 
 def gap_mechanism_strip(
@@ -302,7 +518,7 @@ def gap_mechanism_strip(
 
     if legend:
         ax.legend(
-            handles=[Patch(facecolor=colour, label=name.replace("_", " "))
+            handles=[Patch(facecolor=colour, label=mechanism_label(name))
                      for name, colour in zip(present, colours)],
             loc="upper left", bbox_to_anchor=(2.2, 1.0), ncol=1,
             frameon=False, fontsize=theme.size("caption"),
@@ -393,9 +609,12 @@ def lifespan_bars(
                     color=theme.colour("invalid"),
                     markersize=theme.size("caption") * 0.42,
                     markeredgewidth=theme.stroke("line") * 0.7, clip_on=False)
-        rows.append({"identity": identity, "row_order": row_index,
-                     "first_hour": first, "last_hour": last,
-                     "marked": identity in marked})
+        plotted = {key: value for key, value in row.to_dict().items()
+                   if not str(key).startswith("_")}
+        plotted.update({"identity": identity, "row_order": row_index,
+                        "first_hour": first, "last_hour": last,
+                        "marked": identity in marked})
+        rows.append(plotted)
     if rows:
         ax.set_xlim(min(row["first_hour"] for row in rows), max(row["last_hour"] for row in rows) + step)
         ticks = theme.hour_ticks(ax.get_xlim()[0], ax.get_xlim()[1], hour_ticks)

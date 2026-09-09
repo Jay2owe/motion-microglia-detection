@@ -1,8 +1,12 @@
 """Run the complete accepted, identity-blind postprocessing history.
 
-This module promotes the non-revoked accepted operations through A1 Issue 001
-into one production path. Historical TIFFs are regression oracles only;
-production receives arrays and field-derived event tables from the current run.
+This module promotes the non-revoked accepted biological operations through B2
+stage 80 into one production path. B2 stage 87, B3 stages 90-95, 97 and
+99-106, 109 and post-score label stages 111 and 113-121, and score-only stages 78,
+79, 81-86, 88, 89, 96, 98, 104, 107, 108, 110 and 112 are
+exposed here for downstream fresh-catalogue calibration. Historical TIFFs are
+regression oracles only; production receives current-run arrays and evidence
+tables.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from dataclasses import dataclass
 import importlib
 import json
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
@@ -64,6 +69,68 @@ import cross_reference_owner_relay
 import recording_boundary_owner_cycle
 import duplicate_soma_exclusivity
 import complete_duplicate_lineage
+import recurrent_two_body_fusion
+import exclusive_pair_seat_recovery
+import reciprocal_two_seat_exchange
+import bounded_owner_excursion
+import recurrent_isolated_alias
+import distinct_history_core_preservation
+import branched_motion_lineage_integration
+import complete_flip_recovery_integration
+import projection_tolerant_seat_integration
+import retroactive_successor_integration
+import terminal_two_core_split_integration
+import bracketed_established_owner_invasion_integration
+import terminal_projection_diversion_integration
+import delayed_projection_reclaim_integration
+import boundary_owner_excursion_integration
+import terminal_two_seat_assimilation_integration
+import bracketed_mixed_owner_flash_integration
+import dominant_seat_projection_diversion_integration
+import subresolution_point_artifact_calibration_integration
+import short_owned_companion_projection_calibration_integration
+import ownerless_cohort_latent_gap_completion_integration
+import recurrent_same_owner_branch_swarm_calibration_integration
+import aggregate_shared_core_calibration_integration
+import weak_terminal_reference_relay_calibration_integration
+import single_owner_multireference_relay_calibration_integration
+import event_local_subresolution_artifact_calibration_integration
+import short_ownerless_subcellular_reference_calibration_integration
+import recording_start_two_seat_inheritance_integration
+import detached_projection_owner_relay_calibration_integration
+import right_censored_novel_body_calibration_integration
+import detached_fading_projection_calibration_integration
+import delayed_owner_projection_flash_integration
+import explained_projection_event_calibration_integration
+import gap_tolerant_reciprocal_seat_exchange_integration
+import reconnected_companion_merge_partition_integration
+import component_continuity_duplicate_takeover_integration
+import right_censored_seat_partition_integration
+import right_censored_reciprocal_exchange_integration
+import persistent_single_owner_flash_integration
+import anchored_projection_owner_relay_integration
+import ephemeral_speckle_alias_retirement_integration
+import anchored_projection_raw_gap_completion_integration
+import retirement_aware_persistence_integration
+import terminal_projection_chain_completion_integration
+import conserved_multi_anchor_projection_calibration_integration
+import body_scale_ownerless_allocation_integration
+import terminal_boundary_vanished_seat_integration
+import terminal_boundary_event_calibration_integration
+import fragmented_subcellular_episode_calibration_integration
+import bracketed_ownerless_seat_completion_integration
+import fragmented_encounter_lineage_calibration_integration
+import temporal_core_path_lineage_integration
+import ownerless_reference_handoff_calibration_integration
+import asymmetric_fusion_area_flip_recovery_integration
+import recurrent_dominant_body_relay_integration
+import established_seat_cycle_recovery_integration
+import dormant_seat_successor_recovery_integration
+import staggered_fusion_exchange_recovery_integration
+import large_persistent_reference_relay_integration
+import dormant_owner_reciprocal_partition_integration
+import conservative_episode_ownership_integration
+import original_body_continuity_integration
 from stationary_gap_recovery import recover_stationary_gaps
 from stationary_reconciliation import (
     _assert_identity_blind_params, discover_stationary_takeovers,
@@ -3515,6 +3582,1228 @@ def _well_issue001_isolated_pair_encounter_recovery(
     return candidate, unclaimed.copy(), audit, metrics
 
 
+def _well_issue004_recurrent_two_body_fusion_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Recover recurrent two-body fusions from current-run field evidence."""
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_recurrent_two_body_fusion_recovery", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted recurrent-fusion recovery must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    forbidden_names = {
+        "labels_path", "raw_path", "review_cases_path", "case_ids",
+        "event_ids", "event_targets", "identity_ids", "identity_targets",
+        "track_ids", "track_targets", "frame_ids", "frame_targets",
+        "coordinates", "coordinate_targets", "regions", "region_targets",
+        "forced_identity_ids", "forced_intervals",
+        "physical_track_points_path", "accepted_application_audit_path",
+        "accepted_conflicted_lineage_audit_path",
+    }
+    supplied = sorted(
+        name for values in (configured, params)
+        for name, value in values.items()
+        if name in forbidden_names and value)
+    if supplied:
+        raise ValueError(
+            "field-wide recurrent-fusion recovery received forbidden "
+            "targets: " + ", ".join(sorted(set(supplied))))
+    recurrent_two_body_fusion.assert_target_free(params)
+
+    stage = output_root / "60_recurrent_two_body_fusion" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    points_path = (output_root / "26_latent_body_tracks" / "out" /
+                   "latent_track_points.csv")
+    if enabled and not points_path.is_file():
+        raise FileNotFoundError(
+            "accepted recurrent-fusion recovery requires current-run "
+            f"physical evidence: {points_path}")
+
+    if enabled:
+        points = pd.read_csv(points_path)
+        pair_audit, absorption_events, scored = \
+            recurrent_two_body_fusion.discover(labels, points, params)
+        candidate, verdicts, applications = \
+            recurrent_two_body_fusion.apply(
+                labels, raw, pair_audit, scored, params)
+    else:
+        candidate = labels.copy()
+        pair_audit = pd.DataFrame()
+        absorption_events = pd.DataFrame()
+        verdicts = pd.DataFrame()
+        applications = pd.DataFrame()
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "recurrent-fusion recovery changed foreground segmentation")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "recurrent-fusion recovery overlaps assigned and unclaimed pixels")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "recurrent-fusion recovery changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "recurrent-fusion recovery created "
+            f"{duplicates} duplicate components")
+
+    pair_audit.to_csv(stage / "recurrent_fusion_pair_audit.csv", index=False)
+    absorption_events.to_csv(
+        stage / "absorption_event_audit.csv", index=False)
+    verdicts.to_csv(stage / "recurrent_fusion_verdicts.csv", index=False)
+    applications.to_csv(
+        stage / "recurrent_fusion_frame_applications.csv", index=False)
+    changed = candidate != labels
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "tracks", "frames", "coordinates", "events",
+            "regions", "review_cases")},
+        "pairs_audited": int(len(pair_audit)),
+        "eligible_pairs": int(pair_audit.eligible.astype(bool).sum())
+            if len(pair_audit) else 0,
+        "applied_pairs": int(verdicts.outcome.eq("applied").sum())
+            if len(verdicts) else 0,
+        "absorption_events_audited": int(len(absorption_events)),
+        "application_rows": int(len(applications)),
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "input_identity_count": int(len(before_ids)),
+        "output_identity_count": int(len(after_ids)),
+        "new_identity_count": int(len(after_ids - before_ids)),
+        "removed_identity_count": int(len(before_ids - after_ids)),
+        "foreground_ledger_exact": True,
+        "preexisting_unclaimed_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "parameters": params,
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return (candidate, unclaimed.copy(), pair_audit, absorption_events,
+            verdicts, applications, metrics)
+
+
+def _well_a2_issue001_exclusive_pair_seat_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Recover exclusive pair seats from current-run encounter evidence."""
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_exclusive_pair_seat_recovery", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted exclusive pair-seat recovery must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    exclusive_pair_seat_recovery.assert_target_free(params)
+
+    stage = output_root / "61_exclusive_pair_seat_recovery" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    evidence = output_root / "26_latent_body_tracks" / "out"
+    points_path = evidence / "latent_track_points.csv"
+    encounters_path = evidence / "encounter_frames.csv"
+    if enabled:
+        missing = [path for path in (points_path, encounters_path)
+                   if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "accepted exclusive pair-seat recovery requires current-run "
+                "physical evidence: " + ", ".join(map(str, missing)))
+        points = pd.read_csv(points_path)
+        encounters = pd.read_csv(encounters_path)
+        pair_audit, scored = exclusive_pair_seat_recovery.discover(
+            labels, points, encounters, params)
+        candidate, applications = exclusive_pair_seat_recovery.apply(
+            labels, raw, pair_audit, scored, encounters, params)
+    else:
+        candidate = labels.copy()
+        pair_audit = pd.DataFrame()
+        applications = pd.DataFrame()
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "exclusive pair-seat recovery changed foreground segmentation")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "exclusive pair-seat recovery overlaps assigned and unclaimed")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "exclusive pair-seat recovery changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "exclusive pair-seat recovery created "
+            f"{duplicates} duplicate components")
+
+    pair_audit.to_csv(stage / "exclusive_pair_seat_audit.csv", index=False)
+    applications.to_csv(
+        stage / "exclusive_pair_seat_applications.csv", index=False)
+    changed = candidate != labels
+    applied = applications[applications.applied.astype(bool)] \
+        if len(applications) else applications
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "tracks", "frames", "coordinates", "events",
+            "regions", "review_cases")},
+        "pairs_audited": int(len(pair_audit)),
+        "eligible_pairs": int(pair_audit.eligible.astype(bool).sum())
+            if len(pair_audit) else 0,
+        "applied_pairs": int(applied[
+            ["track_a", "track_b"]].drop_duplicates().shape[0])
+            if len(applied) else 0,
+        "applied_frames": int(applied.frame.astype(int).nunique())
+            if len(applied) else 0,
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "input_identity_count": int(len(before_ids)),
+        "output_identity_count": int(len(after_ids)),
+        "new_identity_count": int(len(after_ids - before_ids)),
+        "removed_identity_count": int(len(before_ids - after_ids)),
+        "foreground_ledger_exact": True,
+        "preexisting_unclaimed_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "parameters": params,
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return candidate, unclaimed.copy(), pair_audit, applications, metrics
+
+
+def _well_a2_issue002_reciprocal_two_seat_exchange(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair isolated one-frame reciprocal exchanges from field evidence."""
+    del raw
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_reciprocal_two_seat_exchange", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted reciprocal two-seat exchange must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    reciprocal_two_seat_exchange.assert_target_free(params)
+
+    stage = output_root / "62_reciprocal_two_seat_exchange" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    points_path = (output_root / "26_latent_body_tracks" / "out" /
+                   "latent_track_points.csv")
+    if enabled and not points_path.is_file():
+        raise FileNotFoundError(
+            "accepted reciprocal two-seat exchange requires current-run "
+            f"physical evidence: {points_path}")
+
+    if enabled:
+        points = pd.read_csv(points_path)
+        audit, internal = reciprocal_two_seat_exchange.discover(
+            labels, points, params)
+        candidate, applications = reciprocal_two_seat_exchange.apply(
+            labels, internal)
+    else:
+        candidate = labels.copy()
+        audit = pd.DataFrame(columns=reciprocal_two_seat_exchange.AUDIT_COLUMNS)
+        applications = pd.DataFrame(columns=[
+            "proposal_id", "frame", "track_a", "track_b", "owner_a",
+            "owner_b", "applied", "changed_pixels", "reason"])
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "reciprocal two-seat exchange changed foreground segmentation")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "reciprocal two-seat exchange overlaps assigned and unclaimed")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "reciprocal two-seat exchange changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "reciprocal two-seat exchange created "
+            f"{duplicates} duplicate components")
+
+    audit.to_csv(
+        stage / "reciprocal_two_seat_exchange_audit.csv", index=False)
+    applications.to_csv(
+        stage / "reciprocal_two_seat_exchange_applications.csv", index=False)
+    changed = candidate != labels
+    applied = applications[applications.applied.astype(bool)] \
+        if len(applications) else applications
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "tracks", "frames", "coordinates", "events",
+            "regions", "review_cases")},
+        "reciprocal_transitions_audited": int(len(audit)),
+        "eligible_exchanges": int(audit.eligible.astype(bool).sum())
+            if len(audit) else 0,
+        "applied_exchanges": int(len(applied)),
+        "applied_frames": int(applied.frame.astype(int).nunique())
+            if len(applied) else 0,
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "input_identity_count": int(len(before_ids)),
+        "output_identity_count": int(len(after_ids)),
+        "new_identity_count": int(len(after_ids - before_ids)),
+        "removed_identity_count": int(len(before_ids - after_ids)),
+        "foreground_ledger_exact": True,
+        "preexisting_unclaimed_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "parameters": params,
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return candidate, unclaimed.copy(), audit, applications, metrics
+
+
+def _well_a2_issue003_bounded_owner_excursion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair short duplicate-owner excursions from field evidence."""
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_bounded_owner_excursion", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted bounded owner excursion must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    bounded_owner_excursion.assert_target_free(params)
+
+    stage = output_root / "63_bounded_owner_excursion" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    points_path = (output_root / "26_latent_body_tracks" / "out" /
+                   "latent_track_points.csv")
+    if enabled and not points_path.is_file():
+        raise FileNotFoundError(
+            "accepted bounded owner excursion requires current-run "
+            f"physical evidence: {points_path}")
+
+    if enabled:
+        points = pd.read_csv(points_path)
+        audit, internal = bounded_owner_excursion.discover(
+            labels, points, params)
+        candidate, applications = bounded_owner_excursion.apply(
+            labels, raw, points, internal, params)
+    else:
+        candidate = labels.copy()
+        audit = pd.DataFrame(columns=bounded_owner_excursion.AUDIT_COLUMNS)
+        applications = pd.DataFrame(
+            columns=bounded_owner_excursion.APPLICATION_COLUMNS)
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "bounded owner excursion changed foreground segmentation")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "bounded owner excursion overlaps assigned and unclaimed")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "bounded owner excursion changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "bounded owner excursion created "
+            f"{duplicates} duplicate components")
+
+    audit.to_csv(stage / "bounded_owner_excursion_audit.csv", index=False)
+    applications.to_csv(
+        stage / "bounded_owner_excursion_applications.csv", index=False)
+    changed = candidate != labels
+    applied = applications[applications.applied.astype(bool)] \
+        if len(applications) else applications
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "tracks", "frames", "coordinates", "events",
+            "regions", "review_cases")},
+        "run_triples_audited": int(len(audit)),
+        "eligible_excursions": int(audit.eligible.astype(bool).sum())
+            if len(audit) else 0,
+        "applied_excursions": int(applied.proposal_id.nunique())
+            if len(applied) else 0,
+        "applied_frames": int(applied.frame.astype(int).nunique())
+            if len(applied) else 0,
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "input_identity_count": int(len(before_ids)),
+        "output_identity_count": int(len(after_ids)),
+        "new_identity_count": int(len(after_ids - before_ids)),
+        "removed_identity_count": int(len(before_ids - after_ids)),
+        "foreground_ledger_exact": True,
+        "preexisting_unclaimed_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "parameters": params,
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return candidate, unclaimed.copy(), audit, applications, metrics
+
+
+def _well_a2_issue004_recurrent_isolated_alias(
+        labels: np.ndarray, unclaimed: np.ndarray, config: Config,
+        output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair recurrent isolated transient aliases from field evidence."""
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_recurrent_isolated_alias", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted recurrent isolated alias must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    recurrent_isolated_alias.assert_target_free(params)
+
+    stage = output_root / "64_recurrent_isolated_alias" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    points_path = (output_root / "26_latent_body_tracks" / "out" /
+                   "latent_track_points.csv")
+    if enabled and not points_path.is_file():
+        raise FileNotFoundError(
+            "accepted recurrent isolated alias requires current-run "
+            f"physical evidence: {points_path}")
+
+    if enabled:
+        points = pd.read_csv(points_path)
+        audit, internal = recurrent_isolated_alias.discover(
+            labels, points, params)
+        candidate, applications = recurrent_isolated_alias.apply(
+            labels, points, internal)
+    else:
+        candidate = labels.copy()
+        audit = pd.DataFrame(columns=recurrent_isolated_alias.AUDIT_COLUMNS)
+        applications = pd.DataFrame(
+            columns=recurrent_isolated_alias.APPLICATION_COLUMNS)
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "recurrent isolated alias changed foreground segmentation")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "recurrent isolated alias overlaps assigned and unclaimed")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "recurrent isolated alias changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "recurrent isolated alias created "
+            f"{duplicates} duplicate components")
+
+    audit.to_csv(stage / "recurrent_isolated_alias_audit.csv", index=False)
+    applications.to_csv(
+        stage / "recurrent_isolated_alias_applications.csv", index=False)
+    changed = candidate != labels
+    applied = applications[applications.applied.astype(bool)] \
+        if len(applications) else applications
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "tracks", "frames", "coordinates", "events",
+            "regions", "review_cases")},
+        "recurrent_clusters_audited": int(len(audit)),
+        "eligible_clusters": int(audit.eligible.astype(bool).sum())
+            if len(audit) else 0,
+        "applied_clusters": int(applied.proposal_id.nunique())
+            if len(applied) else 0,
+        "applied_frames": int(applied.frame.astype(int).nunique())
+            if len(applied) else 0,
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "input_identity_count": int(len(before_ids)),
+        "output_identity_count": int(len(after_ids)),
+        "new_identity_count": int(len(after_ids - before_ids)),
+        "removed_identity_count": int(len(before_ids - after_ids)),
+        "foreground_ledger_exact": True,
+        "preexisting_unclaimed_exact": True,
+        "label_component_ledger_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "parameters": params,
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return candidate, unclaimed.copy(), audit, applications, metrics
+
+
+def _latest_current_audit(output_root: Path,
+                          relative_paths: tuple[str, ...]) -> Path | None:
+    """Return the newest applicable audit produced inside this run only."""
+    for relative in relative_paths:
+        path = output_root / relative
+        if path.is_file():
+            return path
+    return None
+
+
+def _well_a5_issue002_distinct_history_core_preservation(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Preserve an established core in a safe terminal-owner diversion."""
+    configured = config.values["accepted_postprocessing"].get(
+        "field_wide_distinct_history_core_preservation", {})
+    enabled = bool(configured.get("enabled", False))
+    if configured.get("targeting_mode", "field_wide_discovery") != \
+            "field_wide_discovery":
+        raise ValueError(
+            "accepted distinct-history core preservation must be field-wide")
+    params = deepcopy(configured.get("parameters", {}))
+    params["targeting_mode"] = "field_wide_discovery"
+    distinct_history_core_preservation.assert_target_free(configured)
+    distinct_history_core_preservation.assert_target_free(params)
+
+    stage = output_root / "65_distinct_history_core_preservation" / "out"
+    stage.mkdir(parents=True, exist_ok=True)
+    points_path = (output_root / "26_latent_body_tracks" / "out" /
+                   "latent_track_points.csv")
+    application_audit = _latest_current_audit(output_root, (
+        "64_recurrent_isolated_alias/out/application_audit.csv",
+        "63_bounded_owner_excursion/out/application_audit.csv",
+        "62_reciprocal_two_seat_exchange/out/application_audit.csv",
+        "61_exclusive_pair_seat_recovery/out/application_audit.csv",
+        "60_recurrent_two_body_fusion/out/application_audit.csv",
+        "46_transient_misownership_recovery/out/application_audit.csv",
+    ))
+    conflicted_audit = _latest_current_audit(output_root, (
+        "64_recurrent_isolated_alias/out/conflicted_lineage_audit.csv",
+        "63_bounded_owner_excursion/out/conflicted_lineage_audit.csv",
+        "62_reciprocal_two_seat_exchange/out/conflicted_lineage_audit.csv",
+        "61_exclusive_pair_seat_recovery/out/conflicted_lineage_audit.csv",
+        "60_recurrent_two_body_fusion/out/conflicted_lineage_audit.csv",
+        "59_lineage_capacity_recovery/out/conflicted_lineage_audit.csv",
+        "58_terminal_multi_owner_reservation/out/conflicted_lineage_audit.csv",
+        "57_area_continuity_recovery/out/conflicted_lineage_audit.csv",
+        "56_established_lineage_reservation/out/conflicted_lineage_audit.csv",
+        "52_conflicted_dim_lineage_isolation/out/conflicted_lineage_audit.csv",
+    ))
+    if enabled and not points_path.is_file():
+        raise FileNotFoundError(
+            "accepted distinct-history core preservation requires current-run "
+            f"physical evidence: {points_path}")
+    if enabled and application_audit is None:
+        raise FileNotFoundError(
+            "accepted distinct-history core preservation requires a "
+            "current-run application audit")
+
+    if enabled:
+        params["application_audit_path"] = str(application_audit)
+        if conflicted_audit is not None:
+            params["conflicted_lineage_audit_path"] = str(conflicted_audit)
+        points = pd.read_csv(points_path)
+        candidate, proposals, frames = \
+            distinct_history_core_preservation.discover_and_apply(
+                labels, raw, points, params)
+    else:
+        candidate = labels.copy()
+        proposals = pd.DataFrame()
+        frames = pd.DataFrame()
+
+    if not np.array_equal(candidate > 0, labels > 0):
+        raise AssertionError(
+            "distinct-history core preservation changed foreground")
+    if np.any((candidate > 0) & (unclaimed > 0)):
+        raise AssertionError(
+            "distinct-history core preservation overlaps assigned and unclaimed")
+    before_ids = set(map(int, np.unique(labels))) - {0}
+    after_ids = set(map(int, np.unique(candidate))) - {0}
+    if after_ids != before_ids:
+        raise AssertionError(
+            "distinct-history core preservation changed the active identity set")
+    duplicates = owner_consensus.count_new_duplicate_components(
+        labels, candidate)
+    if duplicates:
+        raise AssertionError(
+            "distinct-history core preservation created "
+            f"{duplicates} duplicate components")
+
+    proposals.to_csv(stage / "distinct_history_proposals.csv", index=False)
+    frames.to_csv(stage / "distinct_history_frames.csv", index=False)
+    if application_audit is not None:
+        shutil.copyfile(application_audit, stage / "application_audit.csv")
+    if conflicted_audit is not None:
+        shutil.copyfile(
+            conflicted_audit, stage / "conflicted_lineage_audit.csv")
+    else:
+        (stage / "conflicted_lineage_audit.csv").write_text(
+            "proposal_id,physical_track,assigned_identity,outcome,reason,"
+            "changed_pixels,changed_frames\n", encoding="utf-8")
+    changed = candidate != labels
+    applied = proposals[proposals.applied.fillna(False).astype(bool)] \
+        if len(proposals) else proposals
+    protected_tracks, protected_identities = \
+        distinct_history_core_preservation.protected_assignments(params)
+    metrics = {
+        "version": configured.get("version", "unversioned"),
+        "enabled": enabled,
+        "targeting_mode": "field_wide_discovery",
+        "target_counts": {key: 0 for key in (
+            "identities", "owners", "tracks", "frames", "coordinates",
+            "events", "regions", "review_cases")},
+        "transitions_audited": int(len(proposals)),
+        "eligible_transitions": int(
+            proposals.eligible.fillna(False).astype(bool).sum())
+            if len(proposals) else 0,
+        "applied_transitions": int(len(applied)),
+        "changed_pixels": int(changed.sum()),
+        "changed_frames": int(np.count_nonzero(
+            changed.reshape(len(changed), -1).any(axis=1))),
+        "foreground_changed_pixels": 0,
+        "unclaimed_changed_pixels": 0,
+        "identity_set_exact": True,
+        "new_duplicate_components": int(duplicates),
+        "accepted_protected_tracks": int(len(protected_tracks)),
+        "accepted_protected_identities": int(len(protected_identities)),
+        "globally_conflicted_proposals": int(
+            proposals.global_atomic_conflict.fillna(False).astype(bool).sum())
+            if len(proposals) else 0,
+        "parameters": {key: value for key, value in params.items()
+                       if not str(key).endswith("_path")},
+    }
+    (stage / "producer_metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+    return candidate, unclaimed.copy(), proposals, frames, metrics
+
+
+def _well_a5_issue003_branched_motion_lineage_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, config: Config,
+        output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Recover brief owner excursions on proved physical lineages."""
+    return branched_motion_lineage_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_a5_issue003_complete_flip_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, config: Config,
+        output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Recover complete successor flips on proved physical lineages."""
+    return complete_flip_recovery_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_a5_issue005_projection_tolerant_seat_preservation(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Preserve proved pre-contact seats while retaining projections."""
+    return projection_tolerant_seat_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_a5_issue006_retroactive_successor_separation(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Backfill movie-novel successors on proved physical lineages."""
+    return retroactive_successor_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_a5_issue004_terminal_two_core_split_inheritance(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Preserve two established seats through resolved and terminal splits."""
+    return terminal_two_core_split_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b1_issue001_bracketed_established_owner_invasion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore bookending owners when an invader retains a proved seat."""
+    return bracketed_established_owner_invasion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue001_terminal_projection_diversion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair terminal three-seat diversions from current-run evidence."""
+    return terminal_projection_diversion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue002_delayed_projection_reclaim(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Separate asymmetric overlaps before a delayed owner reclaim."""
+    return delayed_projection_reclaim_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue003_boundary_owner_excursion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore field-wide boundary-anchored owner excursions."""
+    return boundary_owner_excursion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue004_terminal_two_seat_assimilation(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Preserve two raw-supported seats through terminal assimilation."""
+    return terminal_two_seat_assimilation_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue005_bracketed_mixed_owner_flash(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore brief, fully bracketed mixed-owner excursions atomically."""
+    return bracketed_mixed_owner_flash_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue006_dominant_seat_projection_diversion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Restore dominant seats while explicitly accounting for projections."""
+    return dominant_seat_projection_diversion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue007_subresolution_point_artifact_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Remove only fully artifact-explained events from a fresh catalogue."""
+    return subresolution_point_artifact_calibration_integration.run(
+        labels, unclaimed, raw, points, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue008_short_owned_companion_projection_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Suppress uniquely proved short same-owner projection events."""
+    return short_owned_companion_projection_calibration_integration.run(
+        labels, unclaimed, points, events, members, config.values, output_root)
+
+
+def _well_b2_issue009_ownerless_cohort_latent_gap_completion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict[str, Any]]:
+    """Complete only fully supported gaps in field-discovered cohorts."""
+    return ownerless_cohort_latent_gap_completion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue011_recurrent_same_owner_branch_swarm_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Suppress only fully proved recurrent one-owner branch-swarm events."""
+    return recurrent_same_owner_branch_swarm_calibration_integration.run(
+        labels, unclaimed, points, events, members, config.values, output_root)
+
+
+def _well_b2_issue012_aggregate_shared_core_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Reclassify only completely evidenced aggregate shared-core events."""
+    return aggregate_shared_core_calibration_integration.run(
+        labels, unclaimed, raw, points, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue013_weak_terminal_reference_relay_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Reclassify only fully proved weak terminal reference relays."""
+    return weak_terminal_reference_relay_calibration_integration.run(
+        labels, unclaimed, raw, points, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue014_single_owner_multireference_relay_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Reclassify only fully proved single-owner multireference relays."""
+    return single_owner_multireference_relay_calibration_integration.run(
+        labels, unclaimed, points, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue015_event_local_subresolution_artifact_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove only fully proved event-local subresolution artifacts."""
+    return event_local_subresolution_artifact_calibration_integration.run(
+        labels, unclaimed, raw, points, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue016_short_ownerless_subcellular_reference_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove only short ownerless references with subcellular raw cores."""
+    return short_ownerless_subcellular_reference_calibration_integration.run(
+        labels, unclaimed, raw, points, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue018_recording_start_two_seat_inheritance(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore a short branch's owner across a separable boundary encounter."""
+    return recording_start_two_seat_inheritance_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b2_issue026_detached_projection_owner_relay_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Exclude only fully evidenced detached projection relay constituents."""
+    return detached_projection_owner_relay_calibration_integration.run(
+        labels, unclaimed, points, events, members,
+        config.values, output_root)
+
+
+def _well_b2_issue028_right_censored_novel_body_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Exclude fully evidenced novel bodies censored by the recording end."""
+    return right_censored_novel_body_calibration_integration.run(
+        labels, unclaimed, raw, points, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue010_detached_fading_projection_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        points: pd.DataFrame, events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Exclude only fully evidenced detached fading projections."""
+    return detached_fading_projection_calibration_integration.run(
+        labels, unclaimed, points, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue012_explained_projection_event_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        events: pd.DataFrame, members: pd.DataFrame,
+        applications: pd.DataFrame, config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Exclude events already explained by an accepted producer ledger."""
+    return explained_projection_event_calibration_integration.run(
+        labels, unclaimed, events, members, applications,
+        config.values, output_root)
+
+
+def _well_b3_issue002_gap_tolerant_reciprocal_seat_exchange(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore only fully proved reciprocal owner exchanges on two seats."""
+    return gap_tolerant_reciprocal_seat_exchange_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue004_reconnected_companion_merge_partition(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Partition only fully proved two-seat reconnection merge gaps."""
+    return reconnected_companion_merge_partition_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue005_component_continuity_duplicate_takeover(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore only directly continuous resident bodies after takeover."""
+    return component_continuity_duplicate_takeover_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue006_right_censored_seat_partition(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Retain established seats through a right-censored terminal collapse."""
+    return right_censored_seat_partition_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue007_right_censored_reciprocal_exchange(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict[str, Any]]:
+    """Repair decisive right-censored reciprocal owner exchanges."""
+    return right_censored_reciprocal_exchange_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue008_persistent_single_owner_flash(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair persistent single-owner flashes with physical evidence."""
+    return persistent_single_owner_flash_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue012_delayed_owner_projection_flash(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Repair proved delayed-owner projection flashes field-wide."""
+    return delayed_owner_projection_flash_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue013_anchored_projection_owner_relay(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Restore projection ownership from unique durable-anchor history."""
+    return anchored_projection_owner_relay_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue013_ephemeral_speckle_alias_retirement(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Retire only aliases whose complete field is producer-proved."""
+    return ephemeral_speckle_alias_retirement_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue013_anchored_projection_raw_gap_completion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        relay_audit: pd.DataFrame, relay_applications: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict[str, Any]]:
+    """Add only unassigned positive-signal cores in a proved relay."""
+    return anchored_projection_raw_gap_completion_integration.run(
+        labels, unclaimed, raw, relay_audit, relay_applications,
+        config.values, output_root)
+
+
+def _well_b3_issue014_terminal_projection_chain_completion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Complete only fully proved terminal projection-chain raw cores."""
+    return terminal_projection_chain_completion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue015_conserved_multi_anchor_projection_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        points: pd.DataFrame, events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove only fully proved conserved-anchor encounter score alerts."""
+    return conserved_multi_anchor_projection_calibration_integration.run(
+        labels, unclaimed, points, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue016_body_scale_ownerless_allocation(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Allocate only durable, isolated and body-scale ownerless tracks."""
+    return body_scale_ownerless_allocation_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue017_terminal_boundary_vanished_seat(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Partition only complete-field, right-censored vanished seats."""
+    return terminal_boundary_vanished_seat_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue017_terminal_boundary_event_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        events: pd.DataFrame, members: pd.DataFrame,
+        applications: pd.DataFrame, frames: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove alerts resolved by a complete terminal-seat producer ledger."""
+    return terminal_boundary_event_calibration_integration.run(
+        labels, unclaimed, events, members, applications, frames,
+        config.values, output_root)
+
+
+def _well_b3_issue018_fragmented_subcellular_episode_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        raw: np.ndarray, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove only field-proved fragmented subcellular-reference alerts."""
+    return fragmented_subcellular_episode_calibration_integration.run(
+        labels, unclaimed, points, raw, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue019_bracketed_ownerless_seat_completion(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Complete only uniquely bracketed raw-visible ownerless seats."""
+    return bracketed_ownerless_seat_completion_integration.run(
+        labels, unclaimed, raw, config.values, output_root)
+
+
+def _well_b3_issue020_fragmented_encounter_lineage_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Join only score fragments sharing one durable physical encounter."""
+    return fragmented_encounter_lineage_calibration_integration.run(
+        labels, unclaimed, points, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue021_temporal_core_path_lineage(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        events: pd.DataFrame, config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Allocate complete left-censored lineages after fresh scoring."""
+    return temporal_core_path_lineage_integration.run(
+        labels, unclaimed, raw, events, config.values, output_root)
+
+
+def _well_b3_issue022_ownerless_reference_handoff_calibration(
+        labels: np.ndarray, unclaimed: np.ndarray, points: pd.DataFrame,
+        raw: np.ndarray, thresholds: pd.DataFrame,
+        events: pd.DataFrame, members: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Remove only field-proved fragile ownerless handoff alerts."""
+    return ownerless_reference_handoff_calibration_integration.run(
+        labels, unclaimed, points, raw, thresholds, events, members,
+        config.values, output_root)
+
+
+def _well_b3_issue023_asymmetric_fusion_area_flip_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair only field-proved fusion loss and reciprocal area flips."""
+    return asymmetric_fusion_area_flip_recovery_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue024_recurrent_dominant_body_relay(
+        labels: np.ndarray, unclaimed: np.ndarray,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair only field-proved closed recurrent three-owner relays."""
+    return recurrent_dominant_body_relay_integration.run(
+        labels, unclaimed, config.values, output_root)
+
+
+def _well_b3_issue025_established_seat_cycle_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Repair only field-proved directed multi-owner seat cycles."""
+    return established_seat_cycle_recovery_integration.run(
+        labels, unclaimed, raw, points, thresholds,
+        config.values, output_root)
+
+
+def _well_b3_issue026_dormant_seat_successor_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Consolidate only uniquely proved movie-new successor lineages."""
+    return dormant_seat_successor_recovery_integration.run(
+        labels, unclaimed, raw, points, thresholds,
+        config.values, output_root)
+
+
+def _well_b3_issue027_staggered_fusion_exchange_recovery(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, thresholds: pd.DataFrame,
+        config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   pd.DataFrame, dict[str, Any]]:
+    """Repair only field-proved staggered reciprocal owner exchanges."""
+    return staggered_fusion_exchange_recovery_integration.run(
+        labels, unclaimed, raw, points, thresholds,
+        config.values, output_root)
+
+
+def _well_b4_issue001_large_persistent_reference_relay(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Preserve field-proved large stable references through owner relays."""
+    return large_persistent_reference_relay_integration.run(
+        labels, unclaimed, raw, points, config.values, output_root)
+
+
+def _well_b4_issue002_dormant_owner_reciprocal_partition(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, config: Config, output_root: Path,
+        ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame,
+                   dict[str, Any]]:
+    """Repair field-proved dormant takeovers as reciprocal partitions."""
+    return dormant_owner_reciprocal_partition_integration.run(
+        labels, unclaimed, raw, points, config.values, output_root)
+
+
+def _well_b4_issue003_conservative_episode_ownership(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, config: Config, output_root: Path):
+    """Reconcile complete ownership episodes without suppressing detections."""
+    return conservative_episode_ownership_integration.run(
+        labels, unclaimed, raw, points, config.values, output_root)
+
+
+def _well_b4_issue004_original_body_continuity(
+        labels: np.ndarray, unclaimed: np.ndarray, raw: np.ndarray,
+        points: pd.DataFrame, config: Config, output_root: Path):
+    """Preserve a durable initial body using independent observed raw cores."""
+    return original_body_continuity_integration.run(
+        labels, unclaimed, raw, points, config.values, output_root)
+
+
 def run_accepted_history(
         config: Config, stem: str, run_name: str, sources: dict[str, Path],
         m20_labels: np.ndarray, observations: np.ndarray,
@@ -3881,9 +5170,9 @@ def run_accepted_history(
     _save(output_root /
           "39_issue078_foreign_owner_terminal_convergence_unclaimed.tif",
           unclaimed, interval)
-    labels, unclaimed, terminal_assimilation_proposals, \
-        terminal_assimilation_applications, terminal_assimilation_frame_audit, \
-        terminal_assimilation_points, terminal_assimilation_metrics = \
+    labels, unclaimed, companion_assimilation_proposals, \
+        companion_assimilation_applications, companion_assimilation_frame_audit, \
+        companion_assimilation_points, companion_assimilation_metrics = \
         _issue080_terminal_companion_assimilation(
             labels, unclaimed, raw, config, output_root)
     _save(output_root /
@@ -3934,6 +5223,358 @@ def run_accepted_history(
     _save(output_root /
           "44_well_issue001_isolated_pair_encounter_recovery_unclaimed.tif",
           unclaimed, interval)
+    labels, unclaimed, recurrent_fusion_pairs, \
+        recurrent_fusion_absorptions, recurrent_fusion_verdicts, \
+        recurrent_fusion_applications, recurrent_fusion_metrics = \
+        _well_issue004_recurrent_two_body_fusion_recovery(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "45_well_issue004_recurrent_two_body_fusion_recovery.tif",
+          labels, interval)
+    _save(output_root /
+          "45_well_issue004_recurrent_two_body_fusion_recovery_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, exclusive_pair_seats, \
+        exclusive_pair_seat_applications, exclusive_pair_seat_metrics = \
+        _well_a2_issue001_exclusive_pair_seat_recovery(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "46_well_a2_issue001_exclusive_pair_seat_recovery.tif",
+          labels, interval)
+    _save(output_root /
+          "46_well_a2_issue001_exclusive_pair_seat_recovery_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, reciprocal_exchange_audit, \
+        reciprocal_exchange_applications, reciprocal_exchange_metrics = \
+        _well_a2_issue002_reciprocal_two_seat_exchange(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "47_well_a2_issue002_reciprocal_two_seat_exchange.tif",
+          labels, interval)
+    _save(output_root /
+          "47_well_a2_issue002_reciprocal_two_seat_exchange_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, bounded_excursion_audit, \
+        bounded_excursion_applications, bounded_excursion_metrics = \
+        _well_a2_issue003_bounded_owner_excursion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "48_well_a2_issue003_bounded_owner_excursion.tif",
+          labels, interval)
+    _save(output_root /
+          "48_well_a2_issue003_bounded_owner_excursion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, recurrent_alias_audit, \
+        recurrent_alias_applications, recurrent_alias_metrics = \
+        _well_a2_issue004_recurrent_isolated_alias(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "49_well_a2_issue004_recurrent_isolated_alias.tif",
+          labels, interval)
+    _save(output_root /
+          "49_well_a2_issue004_recurrent_isolated_alias_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, distinct_history_proposals, \
+        distinct_history_frames, distinct_history_metrics = \
+        _well_a5_issue002_distinct_history_core_preservation(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "50_well_a5_issue002_distinct_history_core_preservation.tif",
+          labels, interval)
+    _save(output_root /
+          "50_well_a5_issue002_distinct_history_core_preservation_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, branched_lineage_audit, \
+        branched_lineage_applications, branched_lineage_metrics = \
+        _well_a5_issue003_branched_motion_lineage_recovery(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "51_well_a5_issue003_branched_motion_lineage_recovery.tif",
+          labels, interval)
+    _save(output_root /
+          "51_well_a5_issue003_branched_motion_lineage_recovery_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, complete_flip_audit, \
+        complete_flip_applications, complete_flip_duplicate_proof, \
+        complete_flip_metrics = \
+        _well_a5_issue003_complete_flip_recovery(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "52_well_a5_issue003_complete_flip_recovery.tif",
+          labels, interval)
+    _save(output_root /
+          "52_well_a5_issue003_complete_flip_recovery_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, projection_seat_audit, projection_seat_frames, \
+        projection_seat_projections, projection_seat_duplicate_proof, \
+        projection_seat_metrics = \
+        _well_a5_issue005_projection_tolerant_seat_preservation(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "53_well_a5_issue005_projection_tolerant_seat_preservation.tif",
+          labels, interval)
+    _save(output_root /
+          "53_well_a5_issue005_projection_tolerant_seat_preservation_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, retroactive_successor_audit, \
+        retroactive_successor_frames, \
+        retroactive_successor_duplicate_proof, \
+        retroactive_successor_metrics = \
+        _well_a5_issue006_retroactive_successor_separation(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "54_well_a5_issue006_retroactive_successor_separation.tif",
+          labels, interval)
+    _save(output_root /
+          "54_well_a5_issue006_retroactive_successor_separation_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, terminal_split_audit, terminal_split_frames, \
+        terminal_split_metrics = \
+        _well_a5_issue004_terminal_two_core_split_inheritance(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "55_well_a5_issue004_terminal_two_core_split_inheritance.tif",
+          labels, interval)
+    _save(output_root /
+          "55_well_a5_issue004_terminal_two_core_split_inheritance_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, bracketed_invasion_audit, \
+        bracketed_invasion_applications, bracketed_invasion_metrics = \
+        _well_b1_issue001_bracketed_established_owner_invasion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "56_well_b1_issue001_bracketed_established_owner_invasion.tif",
+          labels, interval)
+    _save(output_root /
+          "56_well_b1_issue001_bracketed_established_owner_invasion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, terminal_diversion_proposals, \
+        terminal_diversion_applications, terminal_diversion_metrics = \
+        _well_b2_issue001_terminal_projection_diversion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "57_well_b2_issue001_terminal_projection_diversion.tif",
+          labels, interval)
+    _save(output_root /
+          "57_well_b2_issue001_terminal_projection_diversion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, delayed_reclaim_proposals, \
+        delayed_reclaim_applications, delayed_reclaim_metrics = \
+        _well_b2_issue002_delayed_projection_reclaim(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "58_well_b2_issue002_delayed_projection_reclaim.tif",
+          labels, interval)
+    _save(output_root /
+          "58_well_b2_issue002_delayed_projection_reclaim_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, boundary_excursion_audit, \
+        boundary_excursion_applications, boundary_excursion_metrics = \
+        _well_b2_issue003_boundary_owner_excursion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "59_well_b2_issue003_boundary_owner_excursion.tif",
+          labels, interval)
+    _save(output_root /
+          "59_well_b2_issue003_boundary_owner_excursion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, terminal_assimilation_audit, \
+        terminal_assimilation_applications, terminal_assimilation_metrics = \
+        _well_b2_issue004_terminal_two_seat_assimilation(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "60_well_b2_issue004_terminal_two_seat_assimilation.tif",
+          labels, interval)
+    _save(output_root /
+          "60_well_b2_issue004_terminal_two_seat_assimilation_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, mixed_flash_audit, mixed_flash_applications, \
+        mixed_flash_metrics = _well_b2_issue005_bracketed_mixed_owner_flash(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "61_well_b2_issue005_bracketed_mixed_owner_flash.tif",
+          labels, interval)
+    _save(output_root /
+          "61_well_b2_issue005_bracketed_mixed_owner_flash_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, dominant_seat_audit, dominant_seat_applications, \
+        dominant_seat_base_audit, dominant_seat_metrics = \
+        _well_b2_issue006_dominant_seat_projection_diversion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "62_well_b2_issue006_dominant_seat_projection_diversion.tif",
+          labels, interval)
+    _save(output_root /
+          "62_well_b2_issue006_dominant_seat_projection_diversion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, ownerless_cohort_gap_audit, \
+        ownerless_cohort_gap_metrics = \
+        _well_b2_issue009_ownerless_cohort_latent_gap_completion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "63_well_b2_issue009_ownerless_cohort_latent_gap_completion.tif",
+          labels, interval)
+    _save(output_root /
+          "63_well_b2_issue009_ownerless_cohort_latent_gap_completion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, recording_start_two_seat_audit, \
+        recording_start_two_seat_applications, recording_start_two_seat_metrics = \
+        _well_b2_issue018_recording_start_two_seat_inheritance(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "87_well_b2_issue018_recording_start_two_seat_inheritance.tif",
+          labels, interval)
+    _save(output_root /
+          "87_well_b2_issue018_recording_start_two_seat_inheritance_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, gap_exchange_audit, gap_exchange_applications, \
+        gap_exchange_metrics = \
+        _well_b3_issue002_gap_tolerant_reciprocal_seat_exchange(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "90_well_b3_issue002_gap_tolerant_reciprocal_seat_exchange.tif",
+          labels, interval)
+    _save(output_root /
+          "90_well_b3_issue002_gap_tolerant_reciprocal_seat_exchange_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, reconnected_partition_audit, \
+        reconnected_partition_applications, reconnected_partition_metrics = \
+        _well_b3_issue004_reconnected_companion_merge_partition(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "91_well_b3_issue004_reconnected_companion_merge_partition.tif",
+          labels, interval)
+    _save(output_root /
+          "91_well_b3_issue004_reconnected_companion_merge_partition_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, continuity_takeover_audit, \
+        continuity_takeover_applications, continuity_takeover_metrics = \
+        _well_b3_issue005_component_continuity_duplicate_takeover(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "92_well_b3_issue005_component_continuity_duplicate_takeover.tif",
+          labels, interval)
+    _save(output_root /
+          "92_well_b3_issue005_component_continuity_duplicate_takeover_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, right_censored_partition_audit, \
+        right_censored_partition_frames, right_censored_partition_metrics = \
+        _well_b3_issue006_right_censored_seat_partition(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "93_well_b3_issue006_right_censored_seat_partition.tif",
+          labels, interval)
+    _save(output_root /
+          "93_well_b3_issue006_right_censored_seat_partition_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, right_censored_exchange_audit, \
+        right_censored_exchange_metrics = \
+        _well_b3_issue007_right_censored_reciprocal_exchange(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "94_well_b3_issue007_right_censored_reciprocal_exchange.tif",
+          labels, interval)
+    _save(output_root /
+          "94_well_b3_issue007_right_censored_reciprocal_exchange_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, persistent_flash_audit, \
+        persistent_flash_applications, persistent_flash_metrics = \
+        _well_b3_issue008_persistent_single_owner_flash(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "95_well_b3_issue008_persistent_single_owner_flash.tif",
+          labels, interval)
+    _save(output_root /
+          "95_well_b3_issue008_persistent_single_owner_flash_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, delayed_projection_flash_audit, \
+        delayed_projection_flash_applications, \
+        delayed_projection_flash_base_audit, \
+        delayed_projection_flash_metrics = \
+        _well_b3_issue012_delayed_owner_projection_flash(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "97_well_b3_issue012_delayed_owner_projection_flash.tif",
+          labels, interval)
+    _save(output_root /
+          "97_well_b3_issue012_delayed_owner_projection_flash_unclaimed.tif",
+          unclaimed, interval)
+    issue013_parent_labels = labels.copy()
+    labels, unclaimed, anchored_relay_audit, anchored_relay_applications, \
+        anchored_relay_metrics = \
+        _well_b3_issue013_anchored_projection_owner_relay(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "99_well_b3_issue013_anchored_projection_owner_relay.tif",
+          labels, interval)
+    _save(output_root /
+          "99_well_b3_issue013_anchored_projection_owner_relay_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, alias_retirement_audit, \
+        alias_retirement_applications, alias_retirement_metrics = \
+        _well_b3_issue013_ephemeral_speckle_alias_retirement(
+            labels, unclaimed, config, output_root)
+    _save(output_root /
+          "100_well_b3_issue013_ephemeral_speckle_alias_retirement.tif",
+          labels, interval)
+    _save(output_root /
+          "100_well_b3_issue013_ephemeral_speckle_alias_retirement_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, anchored_raw_gap_audit, anchored_raw_gap_metrics = \
+        _well_b3_issue013_anchored_projection_raw_gap_completion(
+            labels, unclaimed, raw, anchored_relay_audit,
+            anchored_relay_applications, config, output_root)
+    _save(output_root /
+          "101_well_b3_issue013_anchored_projection_raw_gap_completion.tif",
+          labels, interval)
+    _save(output_root /
+          "101_well_b3_issue013_anchored_projection_raw_gap_completion_unclaimed.tif",
+          unclaimed, interval)
+    _, _, _, retirement_persistence_metrics = \
+        retirement_aware_persistence_integration.run(
+            issue013_parent_labels, labels, alias_retirement_audit,
+            alias_retirement_applications, output_root)
+    labels, unclaimed, terminal_projection_chain_audit, \
+        terminal_projection_chain_applications, \
+        terminal_projection_chain_metrics = \
+        _well_b3_issue014_terminal_projection_chain_completion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "103_well_b3_issue014_terminal_projection_chain_completion.tif",
+          labels, interval)
+    _save(output_root /
+          "103_well_b3_issue014_terminal_projection_chain_completion_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, body_scale_ownerless_audit, \
+        body_scale_ownerless_applications, body_scale_ownerless_metrics = \
+        _well_b3_issue016_body_scale_ownerless_allocation(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "105_well_b3_issue016_body_scale_ownerless_allocation.tif",
+          labels, interval)
+    _save(output_root /
+          "105_well_b3_issue016_body_scale_ownerless_allocation_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, terminal_boundary_seat_audit, \
+        terminal_boundary_seat_frames, terminal_boundary_seat_metrics = \
+        _well_b3_issue017_terminal_boundary_vanished_seat(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "106_well_b3_issue017_terminal_boundary_vanished_seat.tif",
+          labels, interval)
+    _save(output_root /
+          "106_well_b3_issue017_terminal_boundary_vanished_seat_unclaimed.tif",
+          unclaimed, interval)
+    labels, unclaimed, bracketed_ownerless_seat_audit, \
+        bracketed_ownerless_seat_frames, bracketed_ownerless_seat_metrics = \
+        _well_b3_issue019_bracketed_ownerless_seat_completion(
+            labels, unclaimed, raw, config, output_root)
+    _save(output_root /
+          "109_well_b3_issue019_bracketed_ownerless_seat_completion.tif",
+          labels, interval)
+    _save(output_root /
+          "109_well_b3_issue019_bracketed_ownerless_seat_completion_unclaimed.tif",
+          unclaimed, interval)
     accepted_foreground = foreground > 0
     final_foreground = (labels > 0) | (unclaimed > 0)
     if np.any(accepted_foreground & ~final_foreground):
@@ -3945,7 +5586,152 @@ def run_accepted_history(
     issue066_enabled = bool(config.values["accepted_postprocessing"].get(
         "field_wide_transient_misownership_recovery", {}).get(
             "enabled", False))
-    if issue066_enabled:
+    distinct_history_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_distinct_history_core_preservation", {}).get(
+                "enabled", False))
+    branched_lineage_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_branched_motion_lineage_recovery", {}).get(
+                "enabled", False))
+    complete_flip_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_complete_flip_recovery", {}).get(
+                "enabled", False))
+    projection_seat_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_projection_tolerant_seat_preservation", {}).get(
+                "enabled", False))
+    retroactive_successor_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_retroactive_successor_separation", {}).get(
+                "enabled", False))
+    terminal_split_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_terminal_two_core_split_inheritance", {}).get(
+                "enabled", False))
+    bracketed_invasion_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_bracketed_established_owner_invasion", {}).get(
+                "enabled", False))
+    terminal_diversion_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_terminal_projection_diversion", {}).get(
+                "enabled", False))
+    delayed_reclaim_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_delayed_projection_reclaim", {}).get(
+                "enabled", False))
+    boundary_excursion_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_boundary_owner_excursion", {}).get(
+                "enabled", False))
+    terminal_assimilation_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_terminal_two_seat_assimilation", {}).get(
+                "enabled", False))
+    mixed_flash_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_bracketed_mixed_owner_flash", {}).get(
+                "enabled", False))
+    dominant_seat_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_dominant_seat_projection_diversion", {}).get(
+                "enabled", False))
+    ownerless_cohort_gap_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_ownerless_cohort_latent_gap_completion", {}).get(
+                "enabled", False))
+    gap_exchange_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_gap_tolerant_reciprocal_seat_exchange", {}).get(
+                "enabled", False))
+    reconnected_partition_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_reconnected_companion_merge_partition", {}).get(
+                "enabled", False))
+    bracketed_ownerless_seat_enabled = bool(
+        config.values["accepted_postprocessing"].get(
+            "field_wide_bracketed_ownerless_seat_completion", {}).get(
+                "enabled", False))
+    if (bracketed_ownerless_seat_enabled
+            and int(bracketed_ownerless_seat_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B3 Issue 019 A005 uses canonical plain zlib TIFF encoding.
+        _save_final_plain_labels(output_root / f"{stem}.tif", labels)
+    elif (reconnected_partition_enabled
+            and int(reconnected_partition_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B3 Issue 004 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (gap_exchange_enabled
+            and int(gap_exchange_metrics.get("changed_pixels", 0)) > 0):
+        # B3 Issue 002 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (ownerless_cohort_gap_enabled
+            and int(ownerless_cohort_gap_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B2 Issue 009 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (dominant_seat_enabled
+            and int(dominant_seat_metrics.get("changed_pixels", 0)) > 0):
+        # B2 Issue 006 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (mixed_flash_enabled
+            and int(mixed_flash_metrics.get("changed_pixels", 0)) > 0):
+        # B2 Issue 005 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (terminal_assimilation_enabled
+            and int(terminal_assimilation_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B2 Issue 004 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (boundary_excursion_enabled
+            and int(boundary_excursion_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B2 Issue 003 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (delayed_reclaim_enabled
+            and int(delayed_reclaim_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B2 Issue 002 R01 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (terminal_diversion_enabled
+            and int(terminal_diversion_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B2 Issue 001 R03 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (bracketed_invasion_enabled
+            and int(bracketed_invasion_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # B1 Issue 001 R02 uses canonical ImageJ zlib label encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (terminal_split_enabled
+            and int(terminal_split_metrics.get("changed_pixels", 0)) > 0):
+        # Issue 004 R05's reviewed candidate uses plain zlib TIFF encoding.
+        _save_final_plain_labels(output_root / f"{stem}.tif", labels)
+    elif (retroactive_successor_enabled
+            and int(retroactive_successor_metrics.get(
+                "changed_pixels", 0)) > 0):
+        # Issue 006 R01's reviewed candidate uses ImageJ zlib encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (projection_seat_enabled
+            and int(projection_seat_metrics.get("changed_pixels", 0)) > 0):
+        # Issue 005 R02's reviewed candidate uses ImageJ zlib encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (complete_flip_enabled
+            and int(complete_flip_metrics.get("changed_pixels", 0)) > 0):
+        # Issue 003 R04's reviewed candidate uses ImageJ zlib encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (branched_lineage_enabled
+            and int(branched_lineage_metrics.get("changed_pixels", 0)) > 0):
+        # Issue 003's reviewed candidate uses ImageJ zlib encoding.
+        _save_final_labels(output_root / f"{stem}.tif", labels)
+    elif (distinct_history_enabled
+            and int(distinct_history_metrics.get("changed_pixels", 0)) > 0):
+        # A changed distinct-history result uses its canonical compressed encoding.
+        _save_final_plain_labels(output_root / f"{stem}.tif", labels)
+    elif issue066_enabled:
         # Issue 066 uses the canonical ImageJ-encoded review TIFF.
         # Preserve those exact accepted bytes after the label-changing stage.
         _save_final_labels(output_root / f"{stem}.tif", labels)
@@ -4583,38 +6369,38 @@ def run_accepted_history(
         "foreign_owner_terminal_convergence_coordinate_targets": 0,
         "foreign_owner_terminal_convergence_event_targets": 0,
         "terminal_companion_assimilation_tracks_audited": int(
-            terminal_assimilation_metrics["tracks_audited"]),
+            companion_assimilation_metrics["tracks_audited"]),
         "terminal_companion_assimilation_proposals_audited": int(
-            terminal_assimilation_metrics[
+            companion_assimilation_metrics[
                 "terminal_assimilation_proposals"]),
         "terminal_companion_assimilation_applied_proposals": int(
-            terminal_assimilation_metrics[
+            companion_assimilation_metrics[
                 "applied_terminal_assimilations"]),
         "terminal_companion_assimilation_proposal_rows": int(
-            len(terminal_assimilation_proposals)),
+            len(companion_assimilation_proposals)),
         "terminal_companion_assimilation_application_rows": int(
-            len(terminal_assimilation_applications)),
+            len(companion_assimilation_applications)),
         "terminal_companion_assimilation_frame_audit_rows": int(
-            len(terminal_assimilation_frame_audit)),
+            len(companion_assimilation_frame_audit)),
         "terminal_companion_assimilation_physical_point_rows": int(
-            len(terminal_assimilation_points)),
+            len(companion_assimilation_points)),
         "terminal_companion_assimilation_changed_pixels": int(
-            terminal_assimilation_metrics["changed_pixels"]),
+            companion_assimilation_metrics["changed_pixels"]),
         "terminal_companion_assimilation_changed_frames": int(
-            terminal_assimilation_metrics["changed_frames"]),
+            companion_assimilation_metrics["changed_frames"]),
         "terminal_companion_assimilation_foreground_changed_pixels": int(
-            terminal_assimilation_metrics["foreground_changed_pixels"]),
+            companion_assimilation_metrics["foreground_changed_pixels"]),
         "terminal_companion_assimilation_unclaimed_ledger_changed_pixels": int(
-            terminal_assimilation_metrics[
+            companion_assimilation_metrics[
                 "unclaimed_ledger_changed_pixels"]),
         "terminal_companion_assimilation_zero_signal_additions": int(
-            terminal_assimilation_metrics["zero_signal_additions"]),
+            companion_assimilation_metrics["zero_signal_additions"]),
         "terminal_companion_assimilation_old_identity_set_preserved": bool(
-            terminal_assimilation_metrics["old_identity_set_preserved"]),
+            companion_assimilation_metrics["old_identity_set_preserved"]),
         "terminal_companion_assimilation_donor_named_frame_losses": int(
-            terminal_assimilation_metrics["donor_named_frame_losses"]),
+            companion_assimilation_metrics["donor_named_frame_losses"]),
         "terminal_companion_assimilation_new_duplicate_components": int(
-            terminal_assimilation_metrics[
+            companion_assimilation_metrics[
                 "new_same_frame_identity_components"]),
         "terminal_companion_assimilation_identity_targets": 0,
         "terminal_companion_assimilation_track_targets": 0,
@@ -4730,6 +6516,768 @@ def run_accepted_history(
         "isolated_pair_recovery_event_targets": 0,
         "isolated_pair_recovery_region_targets": 0,
         "isolated_pair_recovery_review_case_targets": 0,
+        "recurrent_fusion_pairs_audited": int(len(recurrent_fusion_pairs)),
+        "recurrent_fusion_eligible_pairs": int(
+            recurrent_fusion_metrics["eligible_pairs"]),
+        "recurrent_fusion_applied_pairs": int(
+            recurrent_fusion_metrics["applied_pairs"]),
+        "recurrent_fusion_absorption_events_audited": int(
+            len(recurrent_fusion_absorptions)),
+        "recurrent_fusion_verdict_rows": int(
+            len(recurrent_fusion_verdicts)),
+        "recurrent_fusion_application_rows": int(
+            len(recurrent_fusion_applications)),
+        "recurrent_fusion_changed_pixels": int(
+            recurrent_fusion_metrics["changed_pixels"]),
+        "recurrent_fusion_changed_frames": int(
+            recurrent_fusion_metrics["changed_frames"]),
+        "recurrent_fusion_new_duplicate_components": int(
+            recurrent_fusion_metrics["new_duplicate_components"]),
+        "recurrent_fusion_identity_targets": 0,
+        "recurrent_fusion_track_targets": 0,
+        "recurrent_fusion_frame_targets": 0,
+        "recurrent_fusion_coordinate_targets": 0,
+        "recurrent_fusion_event_targets": 0,
+        "recurrent_fusion_region_targets": 0,
+        "recurrent_fusion_review_case_targets": 0,
+        "exclusive_pair_seat_pairs_audited": int(
+            len(exclusive_pair_seats)),
+        "exclusive_pair_seat_eligible_pairs": int(
+            exclusive_pair_seat_metrics["eligible_pairs"]),
+        "exclusive_pair_seat_applied_pairs": int(
+            exclusive_pair_seat_metrics["applied_pairs"]),
+        "exclusive_pair_seat_application_rows": int(
+            len(exclusive_pair_seat_applications)),
+        "exclusive_pair_seat_applied_frames": int(
+            exclusive_pair_seat_metrics["applied_frames"]),
+        "exclusive_pair_seat_changed_pixels": int(
+            exclusive_pair_seat_metrics["changed_pixels"]),
+        "exclusive_pair_seat_changed_frames": int(
+            exclusive_pair_seat_metrics["changed_frames"]),
+        "exclusive_pair_seat_new_duplicate_components": int(
+            exclusive_pair_seat_metrics["new_duplicate_components"]),
+        "exclusive_pair_seat_identity_targets": 0,
+        "exclusive_pair_seat_track_targets": 0,
+        "exclusive_pair_seat_frame_targets": 0,
+        "exclusive_pair_seat_coordinate_targets": 0,
+        "exclusive_pair_seat_event_targets": 0,
+        "exclusive_pair_seat_region_targets": 0,
+        "exclusive_pair_seat_review_case_targets": 0,
+        "reciprocal_two_seat_exchange_transitions_audited": int(
+            len(reciprocal_exchange_audit)),
+        "reciprocal_two_seat_exchange_eligible_exchanges": int(
+            reciprocal_exchange_metrics["eligible_exchanges"]),
+        "reciprocal_two_seat_exchange_applied_exchanges": int(
+            reciprocal_exchange_metrics["applied_exchanges"]),
+        "reciprocal_two_seat_exchange_application_rows": int(
+            len(reciprocal_exchange_applications)),
+        "reciprocal_two_seat_exchange_applied_frames": int(
+            reciprocal_exchange_metrics["applied_frames"]),
+        "reciprocal_two_seat_exchange_changed_pixels": int(
+            reciprocal_exchange_metrics["changed_pixels"]),
+        "reciprocal_two_seat_exchange_changed_frames": int(
+            reciprocal_exchange_metrics["changed_frames"]),
+        "reciprocal_two_seat_exchange_new_duplicate_components": int(
+            reciprocal_exchange_metrics["new_duplicate_components"]),
+        "reciprocal_two_seat_exchange_identity_targets": 0,
+        "reciprocal_two_seat_exchange_track_targets": 0,
+        "reciprocal_two_seat_exchange_frame_targets": 0,
+        "reciprocal_two_seat_exchange_coordinate_targets": 0,
+        "reciprocal_two_seat_exchange_event_targets": 0,
+        "reciprocal_two_seat_exchange_region_targets": 0,
+        "reciprocal_two_seat_exchange_review_case_targets": 0,
+        "bounded_owner_excursion_run_triples_audited": int(
+            len(bounded_excursion_audit)),
+        "bounded_owner_excursion_eligible_excursions": int(
+            bounded_excursion_metrics["eligible_excursions"]),
+        "bounded_owner_excursion_applied_excursions": int(
+            bounded_excursion_metrics["applied_excursions"]),
+        "bounded_owner_excursion_application_rows": int(
+            len(bounded_excursion_applications)),
+        "bounded_owner_excursion_applied_frames": int(
+            bounded_excursion_metrics["applied_frames"]),
+        "bounded_owner_excursion_changed_pixels": int(
+            bounded_excursion_metrics["changed_pixels"]),
+        "bounded_owner_excursion_changed_frames": int(
+            bounded_excursion_metrics["changed_frames"]),
+        "bounded_owner_excursion_new_duplicate_components": int(
+            bounded_excursion_metrics["new_duplicate_components"]),
+        "bounded_owner_excursion_identity_targets": 0,
+        "bounded_owner_excursion_track_targets": 0,
+        "bounded_owner_excursion_frame_targets": 0,
+        "bounded_owner_excursion_coordinate_targets": 0,
+        "bounded_owner_excursion_event_targets": 0,
+        "bounded_owner_excursion_region_targets": 0,
+        "bounded_owner_excursion_review_case_targets": 0,
+        "recurrent_isolated_alias_clusters_audited": int(
+            len(recurrent_alias_audit)),
+        "recurrent_isolated_alias_eligible_clusters": int(
+            recurrent_alias_metrics["eligible_clusters"]),
+        "recurrent_isolated_alias_applied_clusters": int(
+            recurrent_alias_metrics["applied_clusters"]),
+        "recurrent_isolated_alias_application_rows": int(
+            len(recurrent_alias_applications)),
+        "recurrent_isolated_alias_applied_frames": int(
+            recurrent_alias_metrics["applied_frames"]),
+        "recurrent_isolated_alias_changed_pixels": int(
+            recurrent_alias_metrics["changed_pixels"]),
+        "recurrent_isolated_alias_changed_frames": int(
+            recurrent_alias_metrics["changed_frames"]),
+        "recurrent_isolated_alias_new_duplicate_components": int(
+            recurrent_alias_metrics["new_duplicate_components"]),
+        "recurrent_isolated_alias_identity_targets": 0,
+        "recurrent_isolated_alias_track_targets": 0,
+        "recurrent_isolated_alias_frame_targets": 0,
+        "recurrent_isolated_alias_coordinate_targets": 0,
+        "recurrent_isolated_alias_event_targets": 0,
+        "recurrent_isolated_alias_region_targets": 0,
+        "recurrent_isolated_alias_review_case_targets": 0,
+        "distinct_history_transitions_audited": int(
+            len(distinct_history_proposals)),
+        "distinct_history_eligible_transitions": int(
+            distinct_history_metrics["eligible_transitions"]),
+        "distinct_history_applied_transitions": int(
+            distinct_history_metrics["applied_transitions"]),
+        "distinct_history_frame_rows": int(len(distinct_history_frames)),
+        "distinct_history_changed_pixels": int(
+            distinct_history_metrics["changed_pixels"]),
+        "distinct_history_changed_frames": int(
+            distinct_history_metrics["changed_frames"]),
+        "distinct_history_new_duplicate_components": int(
+            distinct_history_metrics["new_duplicate_components"]),
+        "distinct_history_identity_targets": 0,
+        "distinct_history_owner_targets": 0,
+        "distinct_history_track_targets": 0,
+        "distinct_history_frame_targets": 0,
+        "distinct_history_coordinate_targets": 0,
+        "distinct_history_event_targets": 0,
+        "distinct_history_region_targets": 0,
+        "distinct_history_review_case_targets": 0,
+        "branched_lineage_proposals_audited": int(
+            len(branched_lineage_audit)),
+        "branched_lineage_application_rows": int(
+            len(branched_lineage_applications)),
+        "branched_lineage_applied_atomic_groups": int(
+            branched_lineage_metrics["applied_atomic_groups"]),
+        "branched_lineage_changed_pixels": int(
+            branched_lineage_metrics["changed_pixels"]),
+        "branched_lineage_changed_frames": int(
+            branched_lineage_metrics["changed_frames"]),
+        "branched_lineage_new_duplicate_components": int(
+            branched_lineage_metrics["new_duplicate_components"]),
+        "branched_lineage_identity_targets": 0,
+        "branched_lineage_owner_targets": 0,
+        "branched_lineage_track_targets": 0,
+        "branched_lineage_frame_targets": 0,
+        "branched_lineage_coordinate_targets": 0,
+        "branched_lineage_event_targets": 0,
+        "branched_lineage_region_targets": 0,
+        "branched_lineage_review_case_targets": 0,
+        "complete_flip_proposals_audited": int(len(complete_flip_audit)),
+        "complete_flip_application_rows": int(
+            len(complete_flip_applications)),
+        "complete_flip_duplicate_proof_rows": int(
+            len(complete_flip_duplicate_proof)),
+        "complete_flip_applied_atomic_groups": int(
+            complete_flip_metrics["applied_atomic_groups"]),
+        "complete_flip_changed_pixels": int(
+            complete_flip_metrics["changed_pixels"]),
+        "complete_flip_changed_frames": int(
+            complete_flip_metrics["changed_frames"]),
+        "complete_flip_new_duplicate_components": int(
+            complete_flip_metrics["new_duplicate_components"]),
+        "complete_flip_lineage_proven_new_duplicate_components": int(
+            complete_flip_metrics[
+                "lineage_proven_new_duplicate_components"]),
+        "complete_flip_identity_targets": 0,
+        "complete_flip_owner_targets": 0,
+        "complete_flip_track_targets": 0,
+        "complete_flip_frame_targets": 0,
+        "complete_flip_coordinate_targets": 0,
+        "complete_flip_event_targets": 0,
+        "complete_flip_region_targets": 0,
+        "complete_flip_review_case_targets": 0,
+        "projection_seat_transitions_audited": int(
+            len(projection_seat_audit)),
+        "projection_seat_frame_rows": int(len(projection_seat_frames)),
+        "projection_seat_projection_rows": int(
+            len(projection_seat_projections)),
+        "projection_seat_duplicate_proof_rows": int(
+            len(projection_seat_duplicate_proof)),
+        "projection_seat_eligible_transitions": int(
+            projection_seat_metrics["eligible_transitions"]),
+        "projection_seat_applied_transitions": int(
+            projection_seat_metrics["applied_transitions"]),
+        "projection_seat_changed_pixels": int(
+            projection_seat_metrics["changed_pixels"]),
+        "projection_seat_changed_frames": int(
+            projection_seat_metrics["changed_frames"]),
+        "projection_seat_new_duplicate_components": int(
+            projection_seat_metrics["new_duplicate_components"]),
+        "projection_seat_lineage_proven_new_duplicate_components": int(
+            projection_seat_metrics[
+                "lineage_proven_new_duplicate_components"]),
+        "projection_seat_identity_targets": 0,
+        "projection_seat_owner_targets": 0,
+        "projection_seat_track_targets": 0,
+        "projection_seat_frame_targets": 0,
+        "projection_seat_coordinate_targets": 0,
+        "projection_seat_event_targets": 0,
+        "projection_seat_region_targets": 0,
+        "projection_seat_review_case_targets": 0,
+        "retroactive_successor_transitions_audited": int(
+            len(retroactive_successor_audit)),
+        "retroactive_successor_frame_rows": int(
+            len(retroactive_successor_frames)),
+        "retroactive_successor_duplicate_proof_rows": int(
+            len(retroactive_successor_duplicate_proof)),
+        "retroactive_successor_eligible_transitions": int(
+            retroactive_successor_metrics["eligible_transitions"]),
+        "retroactive_successor_applied_transitions": int(
+            retroactive_successor_metrics["applied_transitions"]),
+        "retroactive_successor_changed_pixels": int(
+            retroactive_successor_metrics["changed_pixels"]),
+        "retroactive_successor_changed_frames": int(
+            retroactive_successor_metrics["changed_frames"]),
+        "retroactive_successor_new_duplicate_components": int(
+            retroactive_successor_metrics["new_duplicate_components"]),
+        "retroactive_successor_identity_targets": 0,
+        "retroactive_successor_owner_targets": 0,
+        "retroactive_successor_track_targets": 0,
+        "retroactive_successor_frame_targets": 0,
+        "retroactive_successor_coordinate_targets": 0,
+        "retroactive_successor_event_targets": 0,
+        "retroactive_successor_region_targets": 0,
+        "retroactive_successor_review_case_targets": 0,
+        "terminal_split_proposals_audited": int(len(terminal_split_audit)),
+        "terminal_split_frame_rows": int(len(terminal_split_frames)),
+        "terminal_split_eligible_proposals": int(
+            terminal_split_metrics["eligible_proposals"]),
+        "terminal_split_applied_proposals": int(
+            terminal_split_metrics["applied_proposals"]),
+        "terminal_split_terminal_partitions": int(
+            terminal_split_metrics["terminal_partitions"]),
+        "terminal_split_changed_pixels": int(
+            terminal_split_metrics["changed_pixels"]),
+        "terminal_split_changed_frames": int(
+            terminal_split_metrics["changed_frames"]),
+        "terminal_split_new_duplicate_components": int(
+            terminal_split_metrics["new_duplicate_components"]),
+        "terminal_split_identity_targets": 0,
+        "terminal_split_owner_targets": 0,
+        "terminal_split_track_targets": 0,
+        "terminal_split_frame_targets": 0,
+        "terminal_split_coordinate_targets": 0,
+        "terminal_split_event_targets": 0,
+        "terminal_split_region_targets": 0,
+        "terminal_split_review_case_targets": 0,
+        "bracketed_invasion_run_triples_audited": int(
+            len(bracketed_invasion_audit)),
+        "bracketed_invasion_application_rows": int(
+            len(bracketed_invasion_applications)),
+        "bracketed_invasion_eligible_invasions": int(
+            bracketed_invasion_metrics["eligible_invasions"]),
+        "bracketed_invasion_applied_invasions": int(
+            bracketed_invasion_metrics["applied_invasions"]),
+        "bracketed_invasion_applied_frames": int(
+            bracketed_invasion_metrics["applied_frames"]),
+        "bracketed_invasion_changed_pixels": int(
+            bracketed_invasion_metrics["changed_pixels"]),
+        "bracketed_invasion_changed_frames": int(
+            bracketed_invasion_metrics["changed_frames"]),
+        "bracketed_invasion_new_duplicate_components": int(
+            bracketed_invasion_metrics["new_duplicate_components"]),
+        "bracketed_invasion_identity_targets": 0,
+        "bracketed_invasion_owner_targets": 0,
+        "bracketed_invasion_track_targets": 0,
+        "bracketed_invasion_frame_targets": 0,
+        "bracketed_invasion_coordinate_targets": 0,
+        "bracketed_invasion_event_targets": 0,
+        "bracketed_invasion_region_targets": 0,
+        "bracketed_invasion_review_case_targets": 0,
+        "terminal_diversion_proposals_audited": int(
+            len(terminal_diversion_proposals)),
+        "terminal_diversion_application_rows": int(
+            len(terminal_diversion_applications)),
+        "terminal_diversion_eligible_proposals": int(
+            terminal_diversion_metrics["eligible_proposals"]),
+        "terminal_diversion_applied_proposals": int(
+            terminal_diversion_metrics["applied_proposals"]),
+        "terminal_diversion_changed_pixels": int(
+            terminal_diversion_metrics["changed_pixels"]),
+        "terminal_diversion_changed_frames": int(
+            terminal_diversion_metrics["changed_frames"]),
+        "terminal_diversion_new_identity_count": int(
+            terminal_diversion_metrics["new_identity_count"]),
+        "terminal_diversion_new_duplicate_components": int(
+            terminal_diversion_metrics["new_duplicate_components"]),
+        "terminal_diversion_explained_projection_components": int(
+            terminal_diversion_metrics[
+                "new_explained_projection_components"]),
+        "terminal_diversion_identity_targets": 0,
+        "terminal_diversion_owner_targets": 0,
+        "terminal_diversion_track_targets": 0,
+        "terminal_diversion_frame_targets": 0,
+        "terminal_diversion_coordinate_targets": 0,
+        "terminal_diversion_event_targets": 0,
+        "terminal_diversion_region_targets": 0,
+        "terminal_diversion_review_case_targets": 0,
+        "delayed_reclaim_proposals_audited": int(
+            len(delayed_reclaim_proposals)),
+        "delayed_reclaim_application_rows": int(
+            len(delayed_reclaim_applications)),
+        "delayed_reclaim_eligible_proposals": int(
+            delayed_reclaim_metrics["eligible_proposals"]),
+        "delayed_reclaim_applied_proposals": int(
+            delayed_reclaim_metrics["applied_proposals"]),
+        "delayed_reclaim_changed_pixels": int(
+            delayed_reclaim_metrics["changed_pixels"]),
+        "delayed_reclaim_changed_frames": int(
+            delayed_reclaim_metrics["changed_frames"]),
+        "delayed_reclaim_new_identity_count": int(
+            delayed_reclaim_metrics["new_identity_count"]),
+        "delayed_reclaim_new_duplicate_components": int(
+            delayed_reclaim_metrics["new_duplicate_components"]),
+        "delayed_reclaim_explained_projection_components": int(
+            delayed_reclaim_metrics[
+                "new_explained_projection_components"]),
+        "delayed_reclaim_identity_targets": 0,
+        "delayed_reclaim_owner_targets": 0,
+        "delayed_reclaim_track_targets": 0,
+        "delayed_reclaim_frame_targets": 0,
+        "delayed_reclaim_coordinate_targets": 0,
+        "delayed_reclaim_event_targets": 0,
+        "delayed_reclaim_region_targets": 0,
+        "delayed_reclaim_review_case_targets": 0,
+        "boundary_excursion_run_triples_audited": int(
+            len(boundary_excursion_audit)),
+        "boundary_excursion_application_rows": int(
+            len(boundary_excursion_applications)),
+        "boundary_excursion_eligible_excursions": int(
+            boundary_excursion_metrics["eligible_excursions"]),
+        "boundary_excursion_applied_excursions": int(
+            boundary_excursion_metrics["applied_excursions"]),
+        "boundary_excursion_changed_pixels": int(
+            boundary_excursion_metrics["changed_pixels"]),
+        "boundary_excursion_changed_frames": int(
+            boundary_excursion_metrics["changed_frames"]),
+        "boundary_excursion_new_identity_count": int(
+            boundary_excursion_metrics["new_identity_count"]),
+        "boundary_excursion_new_duplicate_components": int(
+            boundary_excursion_metrics["new_duplicate_components"]),
+        "boundary_excursion_explained_projection_components": int(
+            boundary_excursion_metrics[
+                "new_explained_projection_components"]),
+        "boundary_excursion_identity_targets": 0,
+        "boundary_excursion_owner_targets": 0,
+        "boundary_excursion_track_targets": 0,
+        "boundary_excursion_frame_targets": 0,
+        "boundary_excursion_coordinate_targets": 0,
+        "boundary_excursion_event_targets": 0,
+        "boundary_excursion_region_targets": 0,
+        "boundary_excursion_review_case_targets": 0,
+        "terminal_assimilation_proposals_audited": int(
+            len(terminal_assimilation_audit)),
+        "terminal_assimilation_application_rows": int(
+            len(terminal_assimilation_applications)),
+        "terminal_assimilation_eligible_proposals": int(
+            terminal_assimilation_metrics["eligible_proposals"]),
+        "terminal_assimilation_applied_proposals": int(
+            terminal_assimilation_metrics["applied_proposals"]),
+        "terminal_assimilation_changed_pixels": int(
+            terminal_assimilation_metrics["changed_pixels"]),
+        "terminal_assimilation_changed_frames": int(
+            terminal_assimilation_metrics["changed_frames"]),
+        "terminal_assimilation_new_identity_count": int(
+            terminal_assimilation_metrics["new_identity_count"]),
+        "terminal_assimilation_new_duplicate_components": int(
+            terminal_assimilation_metrics["new_duplicate_components"]),
+        "terminal_assimilation_explained_projection_components": int(
+            terminal_assimilation_metrics[
+                "new_explained_projection_components"]),
+        "terminal_assimilation_identity_targets": 0,
+        "terminal_assimilation_owner_targets": 0,
+        "terminal_assimilation_track_targets": 0,
+        "terminal_assimilation_frame_targets": 0,
+        "terminal_assimilation_coordinate_targets": 0,
+        "terminal_assimilation_event_targets": 0,
+        "terminal_assimilation_region_targets": 0,
+        "terminal_assimilation_review_case_targets": 0,
+        "mixed_owner_flash_proposals_audited": int(len(mixed_flash_audit)),
+        "mixed_owner_flash_application_rows": int(
+            len(mixed_flash_applications)),
+        "mixed_owner_flash_eligible_proposals": int(
+            mixed_flash_metrics["eligible_proposals"]),
+        "mixed_owner_flash_applied_proposals": int(
+            mixed_flash_metrics["applied_proposals"]),
+        "mixed_owner_flash_changed_pixels": int(
+            mixed_flash_metrics["changed_pixels"]),
+        "mixed_owner_flash_changed_frames": int(
+            mixed_flash_metrics["changed_frames"]),
+        "mixed_owner_flash_new_identity_count": int(
+            mixed_flash_metrics["new_identity_count"]),
+        "mixed_owner_flash_new_duplicate_components": int(
+            mixed_flash_metrics["new_duplicate_components"]),
+        "mixed_owner_flash_identity_targets": 0,
+        "mixed_owner_flash_owner_targets": 0,
+        "mixed_owner_flash_track_targets": 0,
+        "mixed_owner_flash_frame_targets": 0,
+        "mixed_owner_flash_coordinate_targets": 0,
+        "mixed_owner_flash_event_targets": 0,
+        "mixed_owner_flash_region_targets": 0,
+        "mixed_owner_flash_review_case_targets": 0,
+        "dominant_seat_diversion_base_intervals_audited": int(
+            len(dominant_seat_base_audit)),
+        "dominant_seat_diversion_proposals_audited": int(
+            len(dominant_seat_audit)),
+        "dominant_seat_diversion_application_rows": int(
+            len(dominant_seat_applications)),
+        "dominant_seat_diversion_eligible_proposals": int(
+            dominant_seat_metrics["eligible_proposals"]),
+        "dominant_seat_diversion_applied_proposals": int(
+            dominant_seat_metrics["applied_proposals"]),
+        "dominant_seat_diversion_changed_pixels": int(
+            dominant_seat_metrics["changed_pixels"]),
+        "dominant_seat_diversion_changed_frames": int(
+            dominant_seat_metrics["changed_frames"]),
+        "dominant_seat_diversion_explained_projection_components": int(
+            dominant_seat_metrics["new_explained_projection_components"]),
+        "dominant_seat_diversion_unexplained_duplicate_components": int(
+            dominant_seat_metrics["new_duplicate_components"]),
+        "dominant_seat_diversion_identity_targets": 0,
+        "dominant_seat_diversion_owner_targets": 0,
+        "dominant_seat_diversion_track_targets": 0,
+        "dominant_seat_diversion_frame_targets": 0,
+        "dominant_seat_diversion_coordinate_targets": 0,
+        "dominant_seat_diversion_event_targets": 0,
+        "dominant_seat_diversion_region_targets": 0,
+        "dominant_seat_diversion_review_case_targets": 0,
+        "ownerless_cohort_gap_proposals_audited": int(
+            len(ownerless_cohort_gap_audit)),
+        "ownerless_cohort_gap_applied_proposals": int(
+            ownerless_cohort_gap_metrics["applied_proposals"]),
+        "ownerless_cohort_gap_changed_pixels": int(
+            ownerless_cohort_gap_metrics["changed_pixels"]),
+        "ownerless_cohort_gap_changed_frames": int(
+            ownerless_cohort_gap_metrics["changed_frames"]),
+        "ownerless_cohort_gap_changed_identities": int(
+            ownerless_cohort_gap_metrics["changed_identities"]),
+        "ownerless_cohort_gap_preexisting_assigned_changed_pixels": int(
+            ownerless_cohort_gap_metrics[
+                "preexisting_assigned_changed_pixels"]),
+        "ownerless_cohort_gap_unclaimed_overlap_pixels": int(
+            ownerless_cohort_gap_metrics["unclaimed_overlap_pixels"]),
+        "ownerless_cohort_gap_zero_signal_additions": int(
+            ownerless_cohort_gap_metrics["zero_signal_additions"]),
+        "ownerless_cohort_gap_new_duplicate_components": int(
+            ownerless_cohort_gap_metrics["new_duplicate_components"]),
+        "ownerless_cohort_gap_identity_targets": 0,
+        "ownerless_cohort_gap_owner_targets": 0,
+        "ownerless_cohort_gap_track_targets": 0,
+        "ownerless_cohort_gap_frame_targets": 0,
+        "ownerless_cohort_gap_coordinate_targets": 0,
+        "ownerless_cohort_gap_event_targets": 0,
+        "ownerless_cohort_gap_region_targets": 0,
+        "ownerless_cohort_gap_review_case_targets": 0,
+        "recording_start_two_seat_encounters_audited": int(
+            len(recording_start_two_seat_audit)),
+        "recording_start_two_seat_eligible_proposals": int(
+            recording_start_two_seat_metrics["eligible_proposals"]),
+        "recording_start_two_seat_applied_proposals": int(
+            recording_start_two_seat_metrics["applied_proposals"]),
+        "recording_start_two_seat_changed_pixels": int(
+            recording_start_two_seat_metrics["changed_pixels"]),
+        "recording_start_two_seat_changed_frames": int(
+            recording_start_two_seat_metrics["changed_frames"]),
+        "recording_start_two_seat_explained_projection_components_added": int(
+            recording_start_two_seat_metrics[
+                "explained_projection_components_added"]),
+        "recording_start_two_seat_unexplained_duplicate_components_added": int(
+            recording_start_two_seat_metrics[
+                "unexplained_duplicate_components_added"]),
+        "recording_start_two_seat_identity_targets": 0,
+        "recording_start_two_seat_owner_targets": 0,
+        "recording_start_two_seat_track_targets": 0,
+        "recording_start_two_seat_frame_targets": 0,
+        "recording_start_two_seat_coordinate_targets": 0,
+        "recording_start_two_seat_event_targets": 0,
+        "recording_start_two_seat_region_targets": 0,
+        "recording_start_two_seat_review_case_targets": 0,
+        "gap_tolerant_reciprocal_exchange_pairs_audited": int(
+            len(gap_exchange_audit)),
+        "gap_tolerant_reciprocal_exchange_eligible_exchanges": int(
+            gap_exchange_metrics["eligible_exchanges"]),
+        "gap_tolerant_reciprocal_exchange_applied_exchanges": int(
+            gap_exchange_metrics["applied_exchanges"]),
+        "gap_tolerant_reciprocal_exchange_application_rows": int(
+            len(gap_exchange_applications)),
+        "gap_tolerant_reciprocal_exchange_changed_pixels": int(
+            gap_exchange_metrics["changed_pixels"]),
+        "gap_tolerant_reciprocal_exchange_changed_frames": int(
+            gap_exchange_metrics["changed_frames"]),
+        "gap_tolerant_reciprocal_exchange_new_duplicate_components": int(
+            gap_exchange_metrics["new_duplicate_components"]),
+        "gap_tolerant_reciprocal_exchange_identity_targets": 0,
+        "gap_tolerant_reciprocal_exchange_owner_targets": 0,
+        "gap_tolerant_reciprocal_exchange_track_targets": 0,
+        "gap_tolerant_reciprocal_exchange_frame_targets": 0,
+        "gap_tolerant_reciprocal_exchange_coordinate_targets": 0,
+        "gap_tolerant_reciprocal_exchange_event_targets": 0,
+        "gap_tolerant_reciprocal_exchange_region_targets": 0,
+        "gap_tolerant_reciprocal_exchange_review_case_targets": 0,
+        "reconnected_companion_partition_reconnections_audited": int(
+            reconnected_partition_metrics["reconnections_audited"]),
+        "reconnected_companion_partition_candidate_pairings_audited": int(
+            len(reconnected_partition_audit)),
+        "reconnected_companion_partition_eligible_partitions": int(
+            reconnected_partition_metrics["eligible_partitions"]),
+        "reconnected_companion_partition_applied_partitions": int(
+            reconnected_partition_metrics["applied_partitions"]),
+        "reconnected_companion_partition_application_rows": int(
+            len(reconnected_partition_applications)),
+        "reconnected_companion_partition_changed_pixels": int(
+            reconnected_partition_metrics["changed_pixels"]),
+        "reconnected_companion_partition_changed_frames": int(
+            reconnected_partition_metrics["changed_frames"]),
+        "reconnected_companion_partition_new_duplicate_components": int(
+            reconnected_partition_metrics["new_duplicate_components"]),
+        "reconnected_companion_partition_identity_targets": 0,
+        "reconnected_companion_partition_owner_targets": 0,
+        "reconnected_companion_partition_track_targets": 0,
+        "reconnected_companion_partition_frame_targets": 0,
+        "reconnected_companion_partition_coordinate_targets": 0,
+        "reconnected_companion_partition_event_targets": 0,
+        "reconnected_companion_partition_region_targets": 0,
+        "reconnected_companion_partition_review_case_targets": 0,
+        "component_continuity_takeover_transitions_audited": int(
+            continuity_takeover_metrics["transitions_audited"]),
+        "component_continuity_takeover_eligible_takeovers": int(
+            continuity_takeover_metrics["eligible_takeovers"]),
+        "component_continuity_takeover_applied_takeovers": int(
+            continuity_takeover_metrics["applied_takeovers"]),
+        "component_continuity_takeover_application_rows": int(
+            len(continuity_takeover_applications)),
+        "component_continuity_takeover_changed_pixels": int(
+            continuity_takeover_metrics["changed_pixels"]),
+        "component_continuity_takeover_changed_frames": int(
+            continuity_takeover_metrics["changed_frames"]),
+        "component_continuity_takeover_new_duplicate_components": int(
+            continuity_takeover_metrics["new_duplicate_components"]),
+        "component_continuity_takeover_identity_targets": 0,
+        "component_continuity_takeover_owner_targets": 0,
+        "component_continuity_takeover_track_targets": 0,
+        "component_continuity_takeover_frame_targets": 0,
+        "component_continuity_takeover_coordinate_targets": 0,
+        "component_continuity_takeover_event_targets": 0,
+        "component_continuity_takeover_region_targets": 0,
+        "component_continuity_takeover_review_case_targets": 0,
+        "right_censored_seat_partition_transitions_audited": int(
+            right_censored_partition_metrics["transitions_audited"]),
+        "right_censored_seat_partition_eligible_transitions": int(
+            right_censored_partition_metrics["eligible_transitions"]),
+        "right_censored_seat_partition_applied_transitions": int(
+            right_censored_partition_metrics["applied_transitions"]),
+        "right_censored_seat_partition_frame_rows": int(
+            len(right_censored_partition_frames)),
+        "right_censored_seat_partition_changed_pixels": int(
+            right_censored_partition_metrics["changed_pixels"]),
+        "right_censored_seat_partition_changed_frames": int(
+            right_censored_partition_metrics["changed_frames"]),
+        "right_censored_seat_partition_new_duplicate_components": int(
+            right_censored_partition_metrics["new_duplicate_components"]),
+        "right_censored_seat_partition_identity_targets": 0,
+        "right_censored_seat_partition_owner_targets": 0,
+        "right_censored_seat_partition_track_targets": 0,
+        "right_censored_seat_partition_frame_targets": 0,
+        "right_censored_seat_partition_coordinate_targets": 0,
+        "right_censored_seat_partition_event_targets": 0,
+        "right_censored_seat_partition_region_targets": 0,
+        "right_censored_seat_partition_review_case_targets": 0,
+        "right_censored_reciprocal_exchange_pairs_audited": int(
+            right_censored_exchange_metrics["pairs_audited"]),
+        "right_censored_reciprocal_exchange_eligible_exchanges": int(
+            right_censored_exchange_metrics["eligible_exchanges"]),
+        "right_censored_reciprocal_exchange_applied_exchanges": int(
+            right_censored_exchange_metrics["applied_exchanges"]),
+        "right_censored_reciprocal_exchange_changed_pixels": int(
+            right_censored_exchange_metrics["changed_pixels"]),
+        "right_censored_reciprocal_exchange_changed_frames": int(
+            right_censored_exchange_metrics["changed_frames"]),
+        "right_censored_reciprocal_exchange_new_duplicate_components": int(
+            right_censored_exchange_metrics["new_duplicate_components"]),
+        "right_censored_reciprocal_exchange_identity_targets": 0,
+        "right_censored_reciprocal_exchange_owner_targets": 0,
+        "right_censored_reciprocal_exchange_track_targets": 0,
+        "right_censored_reciprocal_exchange_frame_targets": 0,
+        "right_censored_reciprocal_exchange_coordinate_targets": 0,
+        "right_censored_reciprocal_exchange_event_targets": 0,
+        "right_censored_reciprocal_exchange_region_targets": 0,
+        "right_censored_reciprocal_exchange_review_case_targets": 0,
+        "persistent_single_owner_flash_proposals_audited": int(
+            persistent_flash_metrics["proposals_audited"]),
+        "persistent_single_owner_flash_eligible_proposals": int(
+            persistent_flash_metrics["eligible_proposals"]),
+        "persistent_single_owner_flash_applied_proposals": int(
+            persistent_flash_metrics["applied_proposals"]),
+        "persistent_single_owner_flash_application_rows": int(
+            len(persistent_flash_applications)),
+        "persistent_single_owner_flash_changed_pixels": int(
+            persistent_flash_metrics["changed_pixels"]),
+        "persistent_single_owner_flash_changed_frames": int(
+            persistent_flash_metrics["changed_frames"]),
+        "persistent_single_owner_flash_new_duplicate_components": int(
+            persistent_flash_metrics["new_duplicate_components"]),
+        "persistent_single_owner_flash_identity_targets": 0,
+        "persistent_single_owner_flash_owner_targets": 0,
+        "persistent_single_owner_flash_track_targets": 0,
+        "persistent_single_owner_flash_frame_targets": 0,
+        "persistent_single_owner_flash_coordinate_targets": 0,
+        "persistent_single_owner_flash_event_targets": 0,
+        "persistent_single_owner_flash_region_targets": 0,
+        "persistent_single_owner_flash_review_case_targets": 0,
+        "delayed_owner_projection_flash_base_proposals_audited": int(
+            len(delayed_projection_flash_base_audit)),
+        "delayed_owner_projection_flash_proposals_audited": int(
+            delayed_projection_flash_metrics["proposals_audited"]),
+        "delayed_owner_projection_flash_eligible_proposals": int(
+            delayed_projection_flash_metrics["eligible_proposals"]),
+        "delayed_owner_projection_flash_applied_proposals": int(
+            delayed_projection_flash_metrics["applied_proposals"]),
+        "delayed_owner_projection_flash_application_rows": int(
+            len(delayed_projection_flash_applications)),
+        "delayed_owner_projection_flash_changed_pixels": int(
+            delayed_projection_flash_metrics["changed_pixels"]),
+        "delayed_owner_projection_flash_changed_frames": int(
+            delayed_projection_flash_metrics["changed_frames"]),
+        "delayed_owner_projection_flash_explained_components": int(
+            delayed_projection_flash_metrics[
+                "new_explained_projection_components"]),
+        "delayed_owner_projection_flash_new_duplicate_components": int(
+            delayed_projection_flash_metrics["new_duplicate_components"]),
+        "delayed_owner_projection_flash_identity_targets": 0,
+        "delayed_owner_projection_flash_owner_targets": 0,
+        "delayed_owner_projection_flash_track_targets": 0,
+        "delayed_owner_projection_flash_frame_targets": 0,
+        "delayed_owner_projection_flash_coordinate_targets": 0,
+        "delayed_owner_projection_flash_event_targets": 0,
+        "delayed_owner_projection_flash_region_targets": 0,
+        "delayed_owner_projection_flash_review_case_targets": 0,
+        "anchored_projection_owner_relay_proposals_audited": int(
+            anchored_relay_metrics["proposals_audited"]),
+        "anchored_projection_owner_relay_eligible_proposals": int(
+            anchored_relay_metrics["eligible_proposals"]),
+        "anchored_projection_owner_relay_applied_proposals": int(
+            anchored_relay_metrics["applied_proposals"]),
+        "anchored_projection_owner_relay_application_rows": int(
+            len(anchored_relay_applications)),
+        "anchored_projection_owner_relay_changed_pixels": int(
+            anchored_relay_metrics["changed_pixels"]),
+        "anchored_projection_owner_relay_changed_frames": int(
+            anchored_relay_metrics["changed_frames"]),
+        "anchored_projection_owner_relay_new_duplicate_components": int(
+            anchored_relay_metrics["new_duplicate_components"]),
+        "anchored_projection_owner_relay_target_counts": dict(
+            anchored_relay_metrics["target_counts"]),
+        "ephemeral_alias_retirement_identities_audited": int(
+            alias_retirement_metrics["identities_audited"]),
+        "ephemeral_alias_retirement_eligible_proposals": int(
+            alias_retirement_metrics["eligible_proposals"]),
+        "ephemeral_alias_retirement_applied_proposals": int(
+            alias_retirement_metrics["applied_proposals"]),
+        "ephemeral_alias_retirement_changed_pixels": int(
+            alias_retirement_metrics["changed_pixels"]),
+        "ephemeral_alias_retirement_changed_frames": int(
+            alias_retirement_metrics["changed_frames"]),
+        "ephemeral_alias_retirement_removed_identity_count": int(
+            alias_retirement_metrics["removed_identity_count"]),
+        "ephemeral_alias_retirement_proof_exact": bool(
+            alias_retirement_metrics["retirement_proof_exact"]),
+        "ephemeral_alias_retirement_target_counts": dict(
+            alias_retirement_metrics["target_counts"]),
+        "anchored_projection_raw_gap_proved_relays": int(
+            anchored_raw_gap_metrics["proved_relays_consumed"]),
+        "anchored_projection_raw_gap_applied_proposals": int(
+            anchored_raw_gap_metrics["applied_proposals"]),
+        "anchored_projection_raw_gap_changed_pixels": int(
+            anchored_raw_gap_metrics["changed_pixels"]),
+        "anchored_projection_raw_gap_changed_frames": int(
+            anchored_raw_gap_metrics["changed_frames"]),
+        "anchored_projection_raw_gap_zero_signal_additions": int(
+            anchored_raw_gap_metrics["zero_signal_additions"]),
+        "anchored_projection_raw_gap_target_counts": dict(
+            anchored_raw_gap_metrics["target_counts"]),
+        "retirement_aware_persistence": retirement_persistence_metrics,
+        "terminal_projection_chain_physical_tracks_audited": int(
+            terminal_projection_chain_metrics["physical_tracks_audited"]),
+        "terminal_projection_chain_projection_parents_audited": int(
+            terminal_projection_chain_metrics["projection_parents_audited"]),
+        "terminal_projection_chain_eligible_proposals": int(
+            terminal_projection_chain_metrics["eligible_proposals"]),
+        "terminal_projection_chain_applied_proposals": int(
+            terminal_projection_chain_metrics["applied_proposals"]),
+        "terminal_projection_chain_application_rows": int(
+            len(terminal_projection_chain_applications)),
+        "terminal_projection_chain_changed_pixels": int(
+            terminal_projection_chain_metrics["changed_pixels"]),
+        "terminal_projection_chain_changed_frames": int(
+            terminal_projection_chain_metrics["changed_frames"]),
+        "terminal_projection_chain_explained_components": int(
+            terminal_projection_chain_metrics[
+                "new_explained_projection_components"]),
+        "terminal_projection_chain_new_duplicate_components": int(
+            terminal_projection_chain_metrics["new_duplicate_components"]),
+        "terminal_projection_chain_target_counts": dict(
+            terminal_projection_chain_metrics["target_counts"]),
+        "body_scale_ownerless_tracks_audited": int(
+            body_scale_ownerless_metrics["tracks_audited"]),
+        "body_scale_ownerless_eligible_proposals": int(
+            body_scale_ownerless_metrics["eligible_proposals"]),
+        "body_scale_ownerless_applied_proposals": int(
+            body_scale_ownerless_metrics["applied_proposals"]),
+        "body_scale_ownerless_application_rows": int(
+            len(body_scale_ownerless_applications)),
+        "body_scale_ownerless_changed_pixels": int(
+            body_scale_ownerless_metrics["changed_pixels"]),
+        "body_scale_ownerless_changed_frames": int(
+            body_scale_ownerless_metrics["changed_frames"]),
+        "body_scale_ownerless_new_identity_count": int(
+            body_scale_ownerless_metrics["new_identity_count"]),
+        "body_scale_ownerless_new_duplicate_components": int(
+            body_scale_ownerless_metrics["new_duplicate_components"]),
+        "body_scale_ownerless_target_counts": dict(
+            body_scale_ownerless_metrics["target_counts"]),
+        "terminal_boundary_seat_disappearances_audited": int(
+            terminal_boundary_seat_metrics["terminal_disappearances_audited"]),
+        "terminal_boundary_seat_eligible_proposals": int(
+            terminal_boundary_seat_metrics["eligible_proposals"]),
+        "terminal_boundary_seat_applied_proposals": int(
+            terminal_boundary_seat_metrics["applied_proposals"]),
+        "terminal_boundary_seat_frame_rows": int(
+            len(terminal_boundary_seat_frames)),
+        "terminal_boundary_seat_changed_pixels": int(
+            terminal_boundary_seat_metrics["changed_pixels"]),
+        "terminal_boundary_seat_changed_frames": int(
+            terminal_boundary_seat_metrics["changed_frames"]),
+        "terminal_boundary_seat_new_duplicate_components": int(
+            terminal_boundary_seat_metrics["new_duplicate_components"]),
+        "terminal_boundary_seat_target_counts": dict(
+            terminal_boundary_seat_metrics["target_counts"]),
+        "bracketed_ownerless_seat_identity_gaps_audited": int(
+            bracketed_ownerless_seat_metrics["identity_gaps_audited"]),
+        "bracketed_ownerless_seat_eligible_gaps": int(
+            bracketed_ownerless_seat_metrics["eligible_gaps"]),
+        "bracketed_ownerless_seat_changed_pixels": int(
+            bracketed_ownerless_seat_metrics["changed_pixels"]),
+        "bracketed_ownerless_seat_changed_frames": int(
+            bracketed_ownerless_seat_metrics["changed_frames"]),
+        "bracketed_ownerless_seat_new_identity_count": int(
+            bracketed_ownerless_seat_metrics["new_identity_count"]),
+        "bracketed_ownerless_seat_new_duplicate_components": int(
+            bracketed_ownerless_seat_metrics["new_duplicate_components"]),
+        "bracketed_ownerless_seat_target_counts": dict(
+            bracketed_ownerless_seat_metrics["target_counts"]),
+        "bracketed_ownerless_seat_frame_rows": int(
+            len(bracketed_ownerless_seat_frames)),
         "active_identities": int(len(set(map(int, np.unique(labels))) - {0})),
         "assigned_pixels": int(np.count_nonzero(labels)),
         "unclaimed_pixels": int(np.count_nonzero(unclaimed)),

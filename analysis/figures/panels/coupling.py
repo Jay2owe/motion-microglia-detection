@@ -13,7 +13,7 @@ from ._contract import PanelResult
 
 __all__ = [
     "lag_profile", "phase_difference", "similarity_matrix", "recurrence",
-    "contact_chord", "phase_map",
+    "contact_chord", "pair_metric_ledger", "phase_map",
 ]
 
 
@@ -197,6 +197,91 @@ def contact_chord(
                        extra={"weights": np.asarray(weights, dtype=float)})
 
 
+def pair_metric_ledger(
+    ax: Any,
+    frame: pd.DataFrame,
+    theme: Any,
+    *,
+    pair_order: Sequence[str],
+    metric_order: Sequence[str],
+    metric_labels: dict[str, str],
+    ratio_column: str = "difference_ratio",
+    pair_column: str = "pair",
+    metric_column: str = "metric",
+    duration_column: str = "hours_in_contact",
+    limit: float = 2.0,
+    annotate: bool = True,
+) -> PanelResult:
+    """Contact pairs by metrics, with every difference scaled to its shuffled mean.
+
+    A value of zero means the two cells match, one is the mean difference after
+    cell measurements are shuffled across the same network, and values above
+    one are progressively less alike. Contact duration is written beside each
+    pair so it keeps its own hour scale rather than sharing the colour scale.
+    """
+    import matplotlib
+    from matplotlib.colors import TwoSlopeNorm
+
+    pair_order = list(pair_order)
+    metric_order = list(metric_order)
+    pivot = frame.pivot(index=pair_column, columns=metric_column, values=ratio_column)
+    pivot = pivot.reindex(index=pair_order, columns=metric_order)
+    matrix = pivot.to_numpy(dtype=float)
+    cmap = matplotlib.colormaps[theme["diverging_cmap"]].with_extremes(
+        bad=theme.colour("missing")
+    )
+    handle = ax.imshow(
+        np.ma.masked_invalid(matrix), aspect="auto", interpolation="nearest",
+        cmap=cmap, norm=TwoSlopeNorm(vmin=0.0, vcenter=1.0, vmax=float(limit)),
+    )
+    durations = frame.groupby(pair_column, sort=False)[duration_column].first()
+    ax.set_yticks(np.arange(len(pair_order)))
+    ax.set_yticklabels([
+        f"{pair}  |  {float(durations.get(pair, np.nan)):g} h"
+        for pair in pair_order
+    ])
+    ax.set_xticks(np.arange(len(metric_order)))
+    ax.set_xticklabels(
+        [metric_labels.get(metric, metric) for metric in metric_order],
+        rotation=28, ha="right", rotation_mode="anchor",
+    )
+    ax.set_ylabel("Cell pair | contact duration")
+    ax.set_xlabel("Cell-level measurement")
+    ax.set_xticks(np.arange(len(metric_order) + 1) - 0.5, minor=True)
+    ax.set_yticks(np.arange(len(pair_order) + 1) - 0.5, minor=True)
+    ax.grid(
+        which="minor", color=theme.colour("page"),
+        linewidth=theme.stroke("hairline"),
+    )
+    ax.tick_params(which="minor", bottom=False, left=False)
+    ax.tick_params(axis="y", labelsize=theme.size("caption") * 0.72)
+    ax.tick_params(axis="x", labelsize=theme.size("caption") * 0.78)
+    if annotate:
+        for row in range(matrix.shape[0]):
+            for column in range(matrix.shape[1]):
+                value = matrix[row, column]
+                if not np.isfinite(value):
+                    continue
+                ink = "page" if value <= 0.32 or value >= limit * 0.82 else "ink"
+                ax.text(
+                    column, row, f"{value:.1f}", ha="center", va="center",
+                    fontsize=theme.size("caption") * 0.65,
+                    color=theme.colour(ink),
+                )
+    drawn = frame[
+        frame[pair_column].isin(pair_order)
+        & frame[metric_column].isin(metric_order)
+    ].copy()
+    drawn["display_row"] = drawn[pair_column].map(
+        {pair: index for index, pair in enumerate(pair_order)}
+    )
+    drawn["display_column"] = drawn[metric_column].map(
+        {metric: index for index, metric in enumerate(metric_order)}
+    )
+    drawn = drawn.sort_values(["display_row", "display_column"], kind="mergesort")
+    return PanelResult(data=drawn, axes=ax, extra={"handle": handle, "matrix": matrix})
+
+
 def phase_map(
     ax: Any,
     positions: Any,
@@ -210,31 +295,8 @@ def phase_map(
     x_label: str = "X position in the field",
     y_label: str = "Y position in the field",
 ) -> PanelResult:
-    """Cell positions coloured by peak time through a cyclic colour map."""
-    import matplotlib
-
-    if cmap is None:
-        chosen = matplotlib.colormaps["twilight_shifted"]
-    elif isinstance(cmap, str):
-        if cmap not in {"twilight", "twilight_shifted", "hsv"}:
-            raise ValueError(f"phase_map needs a cyclic colour map, not {cmap!r}")
-        chosen = matplotlib.colormaps[cmap]
-    else:
-        name = getattr(cmap, "name", "")
-        if name not in {"twilight", "twilight_shifted", "hsv"}:
-            raise ValueError(f"phase_map needs a cyclic colour map, not {name or 'an unnamed map'}")
-        chosen = cmap
-    points = np.asarray(positions, dtype=float)
-    phases = np.mod(np.asarray(phases, dtype=float), period_hours)
-    handle = ax.scatter(points[:, 0], points[:, 1], c=phases, cmap=chosen,
-                        vmin=0, vmax=period_hours, s=theme.point_area(1.8),
-                        edgecolor=theme.colour("page"), linewidth=theme.stroke("hairline"))
-    ax.set_xlim(0, field["width"])
-    ax.set_ylim(field["height"], 0)
-    ax.set_aspect("equal")
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    return PanelResult(
-        data=pd.DataFrame({"x": points[:, 0], "y": points[:, 1], "phase": phases}),
-        axes=ax, extra={"handle": handle},
+    """Compatibility wrapper for :func:`panels.common.phase_map`."""
+    return common.phase_map(
+        ax, positions, phases, theme, field=field, period=period_hours,
+        phase_unit="h", cmap=cmap, x_label=x_label, y_label=y_label,
     )

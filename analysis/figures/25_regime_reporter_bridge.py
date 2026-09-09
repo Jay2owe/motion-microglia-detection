@@ -93,6 +93,7 @@ def build(ctx: FigureContext) -> FigureResult:
                 result = common.event_average(axes["triggered"], offsets, curves, ctx.theme,
                                               role=role_for(metric), bootstrap=200,
                                               null_curves=null_curves if null_curves.size else None,
+                                              null_label="Random-event 95% range",
                                               label=semantic_label(metric)).data
                 result.insert(0, "metric", metric)
                 triggered_rows.append(result)

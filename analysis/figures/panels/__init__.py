@@ -29,7 +29,7 @@ Two kinds of function in these files are *not* panels and say so by their return
 type. A **key** - ``colour_bar``, ``inset_colour_bar``, ``semantic_legend`` -
 explains a mapping something else already recorded, and gives back the
 matplotlib object. A **derivation** - ``path_segments``, ``detrended_z``,
-``mechanism_colours``, ``breakout_events`` - takes no axes and draws nothing; it
+``mechanism_colours``, ``ranked_events`` - takes no axes and draws nothing; it
 is here because it belongs beside the panel it feeds.
 
 **Where a panel lives.** ``common`` holds the chart grammar - a scatter with its
@@ -54,24 +54,27 @@ one answer.
 from __future__ import annotations
 
 from ._contract import PanelResult
-from . import common, coupling, intensity, morphology, motility, presence, rhythms, surveillance, territory
+from . import (common, coupling, intensity, morphology, motility, presence,
+               rhythm_audit, rhythms, spatial, surveillance, territory)
 from .common import (Look, Mark, category_strip, chord, colour_bar, cosinor_curve,
                      dendrogram, dumbbell, event_average, flow, hexbin, histogram,
-                     image_strip, image_tile, lollipop, matrix, paired_slopes,
+                     harmonic_curve, image_strip, image_tile, paired_image_strip,
+                     lollipop, ranked_rate, matrix, paired_slopes, phase_map,
                      raster, reference_lines, resolve_look, ridgeline, rose,
-                     scatter, scatter_with_margins, stacked_area, surface, trace,
-                     trace_stack, vectors)
+                     scatter, scatter_with_margins, stacked_area, surface, trace, trace_overlay,
+                     trace_stack, vectors, stacked_histogram)
 
 __all__ = [
-    "common", "motility", "presence", "rhythms", "surveillance",
-    "morphology", "intensity", "territory", "coupling",
+    "common", "motility", "presence", "rhythm_audit", "rhythms", "surveillance",
+    "morphology", "intensity", "territory", "coupling", "spatial",
     "Look", "Mark", "PanelResult", "resolve_look",
-    "image_tile", "image_strip",
-    "trace", "cosinor_curve", "trace_stack",
+    "image_tile", "image_strip", "paired_image_strip",
+    "trace", "trace_overlay", "cosinor_curve", "harmonic_curve", "trace_stack",
     "raster", "category_strip", "colour_bar",
     "histogram", "reference_lines",
     "scatter", "scatter_with_margins",
-    "dumbbell", "lollipop",
-    "rose", "vectors", "matrix", "surface", "ridgeline", "stacked_area",
+    "dumbbell", "lollipop", "ranked_rate",
+    "phase_map", "rose", "vectors", "matrix", "surface", "stacked_histogram",
+    "ridgeline", "stacked_area",
     "flow", "chord", "paired_slopes", "event_average", "hexbin", "dendrogram",
 ]

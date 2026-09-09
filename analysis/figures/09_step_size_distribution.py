@@ -13,7 +13,7 @@ lives in a configuration this package does not read.
 
 This is the reference shape for a builder. Everything the figure is - its slug,
 its panel, the table it reads, the three options it takes - is in the ``@figure``
-block, and everything the same for all thirty-six pages - the bundle, the
+block, and everything the same for every page - the bundle, the
 header, the README, the save - is in ``_schema._finish``. Copy this file to add
 figure 37.
 """
