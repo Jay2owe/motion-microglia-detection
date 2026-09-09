@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import textwrap
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import weight_dict
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 import numpy as np
@@ -173,6 +175,68 @@ def _plot_fit(
     _finish_axis(ax, config)
 
 
+def draw_workbench_comparison(ax: Any, definition: dict[str, Any]) -> None:
+    """Matplotlib adapter for a completed Workbench grid; no science or defaults.
+
+    Columns, formatting, units, rows and style are supplied by the shared figure
+    builder. Only placement within Motion's surrounding panel belongs here.
+    """
+    if definition.get("kind") != "grid":
+        raise ValueError("A Workbench comparison grid is required")
+    columns = definition["geometry"]["columns"]
+    rows = definition["geometry"]["rows"]
+    display = definition["options"]["display"]
+    style = display["theme_values"]
+    ax.set_axis_off()
+    cells = []
+    for row in rows:
+        rendered = []
+        for column in columns:
+            key, template = column["key"], column["format"]
+            value = row.get(key)
+            text = ("" if value is None else
+                    "yes" if key == "significant" and value else
+                    "no" if key == "significant" else
+                    template.format(float(value)) if template else str(value))
+            if key == "label" and row.get("period_hours") is None:
+                text += " — " + str(row.get("status") or "no result")
+            rendered.append(text)
+        cells.append(rendered)
+    if not cells:
+        ax.text(0, 0.5, "No completed comparison", transform=ax.transAxes)
+        return
+    total_width = sum(column["width"] for column in columns)
+    table = ax.table(cellText=cells, colLabels=[c["label"] for c in columns],
+                     colWidths=[c["width"] / total_width for c in columns],
+                     cellLoc="right", loc="center", bbox=[0, 0.28, 1, 0.66])
+    table.auto_set_font_size(False)
+    # Figure definitions express browser/export font sizes in pixels. Convert
+    # physical 96-dpi pixels to Matplotlib points without changing text scale.
+    for (row_index, column_index), cell in table.get_celld().items():
+        text = cell.get_text()
+        text.set_fontfamily(style["font_name"])
+        text.set_fontsize(float(style["axis_size"] if row_index == 0 else style["tick_size"]) * 0.75)
+        text.set_color(style["text_fill"] if row_index == 0 else style["tick_fill"])
+        weight = style["axis_weight"] if row_index == 0 else style["tick_weight"]
+        # Matplotlib's editable-text SVG adapter requires a named weight even
+        # though its raster adapter accepts the shared CSS numeric weight.
+        if isinstance(weight, (int, float)):
+            weight = next(name for name, number in weight_dict.items() if number == weight)
+        text.set_fontweight(weight)
+        text.set_ha("left" if column_index == 0 else "right")
+        cell.set_facecolor("none")
+        cell.visible_edges = "B"
+        cell.set_edgecolor(style["spine_stroke"] if row_index == 0 else style["grid_stroke"])
+        cell.set_linewidth(float(style["spine_width"] if row_index == 0 else style["grid_width"]) * 0.75)
+    caption_size = float(style["tick_size"]) * 0.75
+    panel_points = ax.get_position().width * ax.figure.get_figwidth() * 72
+    caption = " ".join(definition.get("annotations", ())) + " Raw method p-values; family-corrected verdicts are shown above."
+    ax.text(0, 0.04, "\n".join(textwrap.wrap(caption, max(20, int(panel_points / (caption_size * 0.55))))),
+            transform=ax.transAxes, ha="left", va="bottom",
+            fontsize=float(style["tick_size"]) * 0.75,
+            fontfamily=style["font_name"], color=style["text_fill"])
+
+
 def draw(
     figure: Any,
     rect: tuple[float, float, float, float],
@@ -194,14 +258,20 @@ def draw(
     if include_spectrum:
         column_kinds.append("mesa_spectrum")
     n_columns = len(column_kinds)
+    shared_comparisons = bool(config.get("shared_comparisons"))
+    row_stride = 2 if shared_comparisons else 1
 
     height_ratios: list[float] = []
     block_starts: list[int] = []
     cursor = 0
     for index, _ in enumerate(trace_keys):
         block_starts.append(cursor)
-        height_ratios.extend([0.78, *([1.0] * len(detrends))])
-        cursor += 1 + len(detrends)
+        height_ratios.append(0.78)
+        for _ in detrends:
+            height_ratios.append(1.0)
+            if shared_comparisons:
+                height_ratios.append(config["comparison_row_height"])
+        cursor += 1 + row_stride * len(detrends)
         if index < len(trace_keys) - 1:
             height_ratios.append(0.28)
             cursor += 1
@@ -267,7 +337,7 @@ def draw(
         _finish_axis(raw_axis, config)
 
         for detrend_index, detrend in enumerate(detrends):
-            grid_row = start_row + 1 + detrend_index
+            grid_row = start_row + 1 + row_stride * detrend_index
             detrended = traces.loc[
                 traces["trace_id"].eq(trace_id)
                 & traces["display_panel"].eq("detrended")
@@ -345,7 +415,7 @@ def draw(
                         )
                         axis.text(
                             period, y + 0.13, f"{period:.1f}", ha="center", va="bottom",
-                            fontsize=config["font"]["small"],
+                            fontsize=config["font"]["small"], clip_on=True,
                         )
                 axis.set_xlim(config["period_min_hours"], config["period_max_hours"])
                 axis.set_ylim(-0.45, 1.45)
@@ -439,6 +509,23 @@ def draw(
             for axis in row_axes[: 1 + len(estimators)]:
                 axis.set_xticks(ticks)
 
+            if shared_comparisons:
+                tables = grid[grid_row + 1, :].subgridspec(1, len(config["preprocessors"]), wspace=0.12)
+                for index, preprocessor in enumerate(config["preprocessors"]):
+                    axis = figure.add_subplot(tables[0, index])
+                    axes.append(axis)
+                    entries = results.loc[
+                        results["trace_id"].eq(trace_id) & results["detrend"].eq(detrend)
+                        & results["preprocessor"].eq(preprocessor)]
+                    value = entries.iloc[0].get("workbench_comparison_json") if not entries.empty else None
+                    if isinstance(value, str) and value:
+                        draw_workbench_comparison(axis, json.loads(value))
+                    else:
+                        axis.set_axis_off()
+                        axis.text(0, 0.5, "Comparison unavailable; see method refusal above.", transform=axis.transAxes)
+                    axis.set_title(config["preprocessor_labels"][preprocessor] + " — Workbench comparison",
+                                   loc="left", fontsize=config["font"]["column"], fontweight="bold")
+
     handles = [
         Line2D(
             [0], [0], color=config["colours"][preprocessor],
@@ -469,4 +556,3 @@ def draw(
         color=config["colours"]["caption"], wrap=True,
     )
     return PanelResult(data=traces.copy(), axes=axes)
-

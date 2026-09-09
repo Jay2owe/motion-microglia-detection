@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
+import circadian_workbench as cw
 import numpy as np
 import pandas as pd
 import pytest
@@ -145,15 +148,9 @@ def test_default_periodograms_each_return_their_own_verdict_and_period() -> None
     assert rows["lomb"]["period_hours"] == pytest.approx(27.0, abs=0.6)
 
 
-@pytest.mark.parametrize("method", [
-    "lomb", "chi_square", "f", "fft_nlls", "mesa", "mfourfit",
-    "spectrum_resampling", "jtk", "ejtk",
-])
+@pytest.mark.parametrize("method", [entry["key"] for entry in cw.call("period_methods").data["methods"]])
 def test_every_workbench_period_method_is_discovered_and_runnable(method) -> None:
-    expected = {
-        "lomb", "chi_square", "f", "fft_nlls", "mesa", "mfourfit",
-        "spectrum_resampling", "jtk", "ejtk",
-    }
+    expected = {entry["key"] for entry in cw.call("period_methods").data["methods"]}
     assert set(circadian.PERIOD_METHODS) == expected
     hours, values = _wave(period=24.0, days=7.0, interval=0.5)
     result = circadian.estimate_one(
@@ -173,6 +170,89 @@ def test_every_workbench_period_method_is_discovered_and_runnable(method) -> Non
     assert result["method"] == method
     assert result["status"] == "ok"
     assert result["period_hours"] == pytest.approx(24.0, abs=0.7)
+
+
+def test_uniform_trace_uses_the_exact_workbench_caller_and_defaults():
+    assert circadian.trace is cw.trace
+    assert circadian.describe is cw.describe
+    hours, values = _wave()
+    result = circadian.trace(hours, values).compare_periods()
+    direct = cw.trace(hours, values).compare_periods()
+    assert result.data == direct.data
+    assert result.run_record["inputs"]["config"] == direct.run_record["inputs"]["config"]
+    assert result.plot().definition.as_dict() == direct.plot().definition.as_dict()
+    # The explicitly configured measurement workflow is a separate contract.
+    assert DEFAULTS["period_search_hours"] == [2.0, 48.0]
+    assert DEFAULTS["rhythmic_alpha"] == 0.05
+
+
+def test_argument_groups_and_options_reference_live_workbench_definitions():
+    description = cw.describe("compare_periods")
+    references = next(row["references"] for row in description["params"] if row["name"] == "config")
+    group = circadian.argument_group()
+    assert set(group) == set(references)
+    assert group == {row["key"]: row for row in description["config_arguments"] if row["key"] in references}
+    options = circadian.scientific_options()
+    for name, spec in options.items():
+        if spec["reference"].startswith("config."):
+            parent = group[spec["reference"].removeprefix("config.")]
+            for key in ("description", "units", "default", "minimum", "maximum", "aliases"):
+                assert spec[key] == parent[key], (name, key)
+    group["period_methods"]["default"].append("not-a-method")
+    assert "not-a-method" not in circadian.argument_group()["period_methods"]["default"]
+
+
+def test_uniform_explicit_settings_and_completed_figures_ignore_prior_calls():
+    hours, values = _wave(days=3)
+    requested = {"period_min_hours": 2, "period_max_hours": 48,
+                 "period_detrend_lowess_iterations": 0, "sr_trim_high_frequency": False}
+    before = deepcopy(requested)
+    result = circadian.trace(hours, values, value_label="Cell area", value_unit="um2",
+                             settings=requested).detrend(method="linear").compare_periods()
+    figure = result.plot(theme="classic")
+    snapshot = figure.definition.as_dict()
+    record = result.run_record
+    requested["period_min_hours"] = 40
+    np.random.seed(829)
+    np.random.random(100)
+    circadian.trace(hours, values).period().plot(theme="pyflash")
+    result.data["table"].clear()
+    result.provenance.clear()
+    repeated = circadian.trace(hours, values, value_label="Cell area", value_unit="um2",
+                               settings=before).detrend(method="linear").compare_periods()
+    assert repeated.run_record["result_sha256"] == record["result_sha256"]
+    assert repeated.plot(theme="classic").definition.as_dict() == snapshot
+    assert result.plot(theme="classic").definition.as_dict() == snapshot
+    assert record["inputs"]["config"]["period_detrend_lowess_iterations"] == 0
+    assert record["inputs"]["config"]["sr_trim_high_frequency"] is False
+
+
+def test_legacy_result_records_keep_exact_effective_settings_and_diagnostics():
+    hours, values = _wave(period=12, days=3)
+    params = _params(period_methods=["lomb", "mesa"], workbench_config={"mesa_model_length": 12})
+    compared = circadian.estimate_trace(hours, values, params)
+    config = compared["config"]
+    direct = cw.trace(hours, values, name="cell trace").compare_periods(settings=config)
+    assert compared["comparison"]["table"] == direct.data["table"]
+    assert compared["run_record"]["inputs"]["config"] == config
+    single = circadian.estimate_one(hours, values, params, "mesa")
+    record = json.loads(single["workbench_run_record_json"])
+    direct_single = cw.trace(hours, values, name="cell trace").period("mesa", settings=record["inputs"]["config"])
+    assert single["diagnostics"] == direct_single.data["estimate"]["diagnostics"]
+    assert single["components"] == direct_single.data["estimate"]["components"]
+    assert record["inputs"]["config"]["period_min_hours"] == 2
+    assert record["inputs"]["config"]["period_max_hours"] == 48
+
+
+def test_rhythm_output_rows_retain_the_completed_workbench_record():
+    hours, values = _wave(period=12, days=3)
+    frame = pd.DataFrame({"identity": 1, "hours": hours, "corrected_mean": values})
+    tables = derive(frame, _context(_params()))
+    for encoded in tables["rhythm_methods"]["workbench_run_record_json"]:
+        record = json.loads(encoded)
+        assert record["action"] == "compare_periods"
+        assert record["recordings"]
+        assert record["environment"]["versions"]["circadian-workbench"] == cw.__version__
 
 
 def test_matrix_lomb_route_matches_the_public_workbench_estimator() -> None:

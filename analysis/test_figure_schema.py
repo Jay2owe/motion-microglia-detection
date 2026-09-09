@@ -1327,3 +1327,16 @@ def test_every_fresh_circadian_figure_has_the_same_analysis_controls():
         assert spec.option("period_min_hours").default == 2.0, spec.slug
         assert spec.option("period_max_hours").default == 48.0, spec.slug
         assert spec.option("rhythmic_alpha").default == 0.05, spec.slug
+
+
+def test_scientific_figure_help_is_derived_from_workbench_not_local_wording():
+    definitions = workbench.scientific_options()
+    for name, entry in definitions.items():
+        assert entry["description"] in OPTIONS[name].help
+        assert entry["units"] in OPTIONS[name].help
+    specs = load_all()
+    for spec in specs.values():
+        for option in spec.options:
+            if option.name in definitions:
+                assert option.scientific_definition() == definitions[option.name]
+    assert Option("bins").scientific_definition() is None

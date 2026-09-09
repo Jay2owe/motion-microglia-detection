@@ -199,6 +199,41 @@ seconds.
 
 ### Rhythm detection and period estimation
 
+For new Python calls, the gateway exposes Workbench's caller unchanged:
+
+```python
+from analysis import circadian
+
+recording = circadian.trace(hours, values, value_label="Cell area", value_unit="um2",
+                           settings={"period_min_hours": 2, "period_max_hours": 48})
+result = recording.detrend(method="linear").compare_periods(["lomb", "mesa"])
+result.plot(theme="classic").save("periods.svg")
+```
+
+Relative output names are saved below `.circadian-agent` unless a root is
+explicitly supplied to `save`. Omitted scientific arguments on this entrance
+use only the installed Workbench defaults. The broad range above is an explicit
+choice for unknown microglial periods, not a new universal circadian default.
+`circadian.describe("compare_periods")` describes the installed action and
+`circadian.argument_group()` returns its accepted scientific definitions.
+
+Existing measurement workflows retain their explicit compatibility settings:
+2–48 h, three comparison periodograms, alpha 0.05, linear detrending with a
+24-hour window, and the configured observation/cycle safeguards. These are not
+the defaults of `circadian.trace`. Their existing call signatures and result
+columns remain supported; no historical run or global theme selects defaults.
+Scientific figure help and choices now come from Workbench, while measurement
+selection, family correction and data sufficiency remain Motion controls.
+
+Completed comparisons expose the original Workbench `result` and `run_record`.
+The `rhythm_methods.csv` table retains that record in
+`workbench_run_record_json`, including effective settings, input identities,
+actual random seeds and replay conditions. The period-method audit uses the
+same completed comparison for its estimates and common comparison tables. Its
+standalone producer draws the saved Workbench definitions and surrounding
+Motion panels without fitting again. Raw method p-values in the shared tables
+remain distinct from Motion's separately labelled family-corrected verdicts.
+
 Circadian Workbench is the scientific engine behind the `rhythms` module.
 The package crosses that boundary only through Circadian Workbench's public
 package root and its public `statistics` module. Motion Analysis keeps its

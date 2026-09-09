@@ -30,6 +30,7 @@ the next and has one comparison to work with here: ``days_covered`` and
 
 from __future__ import annotations
 
+import json
 import numpy as np
 import pandas as pd
 
@@ -246,6 +247,7 @@ PRODUCES = (
     Column("status", "Whether this method returned an estimate", "status", "reference"),
     Column("phase_reference", "Origin used for phase", "name", "reference"),
     Column("phase_units", "Units used for phase", "name", "reference"),
+    Column("workbench_run_record_json", "Completed Workbench inputs, source identity and replay conditions", "JSON", "reference"),
     # The non-parametric block, on the same row as the fits it sits beside.
     #
     # Every hour here is hours *since the recording started*, not a time of day,
@@ -415,6 +417,7 @@ def derive(cell_frame: pd.DataFrame, context: MeasurementContext) -> dict[str, p
                     "method_rhythmic": method_rhythmic,
                     "method_rhythm_status": method_rhythm_status,
                     "period_estimator": entry["method"] == estimator_method,
+                    "workbench_run_record_json": json.dumps(analysed["run_record"], allow_nan=False),
                     **method_entry,
                 })
 

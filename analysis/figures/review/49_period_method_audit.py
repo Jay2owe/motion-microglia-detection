@@ -201,7 +201,9 @@ def build(ctx: FigureContext) -> FigureResult:
     ]
     n_columns = 1 + len(estimators) + int("fft_nlls" in estimators) + int("mesa" in estimators)
     nominal_width = max(13.8, 2.0 + 3.75 * n_columns)
-    nominal_height = 4.2 + len(trace_keys) * (2.0 + 2.45 * len(detrends))
+    # Each fit row has two completed Workbench comparison tables beneath it.
+    comparison_inches = max(2.0, 0.4 * (len(estimators) + 2))
+    nominal_height = 4.2 + len(trace_keys) * (2.0 + (2.45 + comparison_inches) * len(detrends))
     figure_ = ctx.sheet(nominal_width, nominal_height)
     actual_width, actual_height = map(float, figure_.get_size_inches())
 
@@ -442,10 +444,39 @@ def analyse_traces(
                         })
 
                     estimate_cache: dict[str, dict[str, Any]] = {}
+                    comparison_definition = ""
+                    comparison_record = ""
+                    can_fit = len(hours) >= min_observations and not detrend_message
+                    if can_fit:
+                        try:
+                            compared = workbench.estimate_trace(
+                                hours, analysis_input, params, methods=estimators,
+                                detrend=detrend,
+                            )
+                            details = {entry["method"]: entry
+                                       for entry in compared["comparison"]["estimates"]}
+                            comparison_record = json.dumps(compared["run_record"], allow_nan=False)
+                            estimate_cache = {
+                                row["method"]: {
+                                    **row,
+                                    "diagnostics": details[row["method"]].get("diagnostics", {}),
+                                    "components": details[row["method"]].get("components", []),
+                                    "workbench_run_record_json": comparison_record,
+                                } for row in compared["rows"]
+                            }
+                            # Actual completed Result, never a reconstructed or
+                            # refitted display result. The renderer uses this
+                            # detached definition and never imports Workbench.
+                            comparison_definition = json.dumps(
+                                compared["result"].plot().definition.as_dict(), allow_nan=False)
+                        except (ValueError, RuntimeError):
+                            # Retain the existing per-method refusal behaviour
+                            # if the multi-method call cannot complete.
+                            estimate_cache = {}
                     for estimator in estimators:
-                        estimate = _safe_estimate(
+                        estimate = estimate_cache.get(estimator) or (_safe_estimate(
                             hours, analysis_input, params, estimator, detrend,
-                        ) if len(hours) >= min_observations and not detrend_message else {
+                        ) if can_fit else {
                             "method": estimator,
                             "method_label": workbench.PERIOD_METHODS[estimator]["label"],
                             "status": "not_tested" if len(hours) < min_observations else "failed",
@@ -456,7 +487,7 @@ def analyse_traces(
                             "diagnostics": {}, "components": [],
                             "period_hours": np.nan, "p_value": np.nan,
                             "workbench_version": workbench.WORKBENCH_VERSION,
-                        }
+                        })
                         estimate_cache[estimator] = estimate
                         significance_method = (
                             estimator
@@ -469,7 +500,7 @@ def analyse_traces(
                         )
                         if evidence_id not in evidence_cache:
                             evidence = (
-                                estimate if significance_method == estimator else
+                                estimate if significance_method == estimator or not can_fit else
                                 estimate_cache.get(significance_method) or _safe_estimate(
                                     hours, analysis_input, params,
                                     significance_method, detrend,
@@ -490,6 +521,7 @@ def analyse_traces(
                                 "period_hours": _finite(evidence.get("period_hours")),
                                 "p_value": _finite(evidence.get("p_value")),
                                 "message": str(evidence.get("message") or ""),
+                                "workbench_run_record_json": evidence.get("workbench_run_record_json", ""),
                             }
 
                         period = _finite(estimate.get("period_hours"))
@@ -621,6 +653,8 @@ def analyse_traces(
                                 diagnostics.get("stopped_because") or ""
                             ),
                             "workbench_version": workbench.WORKBENCH_VERSION,
+                            "workbench_run_record_json": estimate.get("workbench_run_record_json", ""),
+                            "workbench_comparison_json": comparison_definition,
                             "message": str(estimate.get("message") or ""),
                         })
 
@@ -787,6 +821,8 @@ def renderer_config(
             for name in detrends
         },
         "estimators": estimators,
+        "shared_comparisons": True,
+        "comparison_row_height": max(0.82, 0.16 * (len(estimators) + 2)),
         "estimator_labels": {
             name: workbench.PERIOD_METHODS[name]["label"] for name in estimators
         },

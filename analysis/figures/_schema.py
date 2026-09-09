@@ -125,6 +125,11 @@ class Option:
     def vocabulary(self) -> Vocabulary:
         return OPTIONS[self.name]
 
+    def scientific_definition(self) -> dict | None:
+        """Live Workbench meaning; this figure's explicit default stays separate."""
+        from analysis.circadian import scientific_options
+        return scientific_options().get(self.name)
+
     def caster(self) -> Callable[[str], Any]:
         return self.cast or OPTIONS[self.name].cast
 

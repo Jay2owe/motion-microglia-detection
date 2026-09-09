@@ -5,5 +5,5 @@ scikit-image
 tifffile
 Pillow
 pytest
-circadian-workbench>=0.7,<0.8
-Auto-Organotypic>=0.5,<0.6
+circadian-workbench>=0.8,<0.9
+Auto-Organotypic>=0.6,<0.7

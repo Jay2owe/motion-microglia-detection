@@ -9,6 +9,8 @@ copying another implementation into ``analysis.modules``.
 
 from __future__ import annotations
 
+from copy import deepcopy
+import json
 from typing import Any, Sequence
 
 import numpy as np
@@ -18,15 +20,30 @@ import circadian_workbench as cw
 
 WORKBENCH_VERSION = cw.__version__
 
+# New uniform entrance: exactly Workbench's arguments, defaults, units, caller
+# and completed-result/figure contract. No Motion preset or history lookup.
+trace = cw.trace
+describe = cw.describe
+
+
+def argument_group(action: str = "compare_periods") -> dict[str, dict[str, Any]]:
+    """Detached, authoritative scientific settings accepted by an action."""
+    description = cw.describe(action)
+    if not description["ok"]:
+        raise ValueError(description["error"])
+    references = {key for item in description["params"]
+                  for key in item.get("references", [])}
+    return {row["key"]: deepcopy(row)
+            for row in description.get("config_arguments", [])
+            if row["key"] in references}
+
 
 # Circadian Workbench is the authority for baseline removal. Discover its
 # choices through the public configuration contract; omit only alternate
 # spellings of an algorithm already present under its canonical name.
-_WORKBENCH_CONFIG_SCHEMA = cw.call("describe_config").data["config"]
-_DETREND_ALLOWED = next(
-    entry["allowed"] for entry in _WORKBENCH_CONFIG_SCHEMA
-    if entry["key"] == "period_detrend"
-)
+_WORKBENCH_CONFIG_SCHEMA = argument_group()
+_DETREND_SPEC = _WORKBENCH_CONFIG_SCHEMA["period_detrend"]
+_DETREND_ALLOWED = [*_DETREND_SPEC["allowed"], *_DETREND_SPEC["aliases"]]
 _PREFERRED_DETREND_ORDER = (
     "none", "running_mean", "moving_average", "moving_median",
     "running_median", "median", "linear", "robust_linear", "robust",
@@ -42,6 +59,8 @@ DETREND_METHODS: tuple[str, ...] = tuple(
     + sorted(set(_DETREND_ALLOWED) - set(_PREFERRED_DETREND_ORDER))
 )
 
+# Explicit compatibility values for existing measurement workflows, not a
+# second default registry for the uniform trace entrance above.
 DETREND_DEFAULTS: dict[str, Any] = {
     "detrend": "linear",
     "detrend_window_hours": 24.0,
@@ -203,6 +222,35 @@ NORMALIZATION_METHODS: dict[str, dict[str, Any]] = {
     str(entry["key"]): dict(entry)
     for entry in cw.normalization_methods().data["methods"]
 }
+
+
+def scientific_options() -> dict[str, dict[str, Any]]:
+    """Workbench meanings with Motion spelling/role bindings, not new defaults.
+
+    Family correction and data/cycle sufficiency are Motion workflow controls;
+    they are deliberately not presented as Workbench estimator arguments.
+    """
+    config = argument_group()
+    mapping = {
+        "fit_method": "period_method", "period_methods": "period_methods",
+        "significance_method": "period_method",
+        "secondary_significance_method": "period_method",
+        "period_min_hours": "period_min_hours", "period_max_hours": "period_max_hours",
+        "rhythmic_alpha": "periodogram_alpha",
+        **{name: "period_" + name for name in DETREND_DEFAULTS},
+        "detrend_methods": "period_detrend",
+    }
+    entries = {name: {**deepcopy(config[key]), "reference": "config." + key}
+               for name, key in mapping.items()}
+    for name in ("significance_method", "secondary_significance_method"):
+        entries[name]["allowed"] = list(SIGNIFICANCE_METHODS)
+        entries[name]["role"] = "Significance test, selected separately from period estimation."
+    entries["rhythmic_alpha"]["references"] = ["config.periodogram_alpha", "config.jtk_alpha"]
+    entries["rhythmic_alpha"]["role"] = "Explicit threshold also supplied to rank tests and family correction."
+    entries["detrend_methods"]["type"] = "list"
+    entries["period_config"] = deepcopy(next(
+        item for item in cw.describe("compare_periods")["params"] if item["name"] == "config"))
+    return entries
 
 
 def sample_interval_minutes(hours: Sequence[float]) -> float:
@@ -482,7 +530,7 @@ def detrend_trace(hours: Sequence[float], values: Sequence[float], params: dict,
     """Detrend through Circadian Workbench and keep its audit metadata."""
     detrending = detrend_settings(
         params, method=method, window_hours=window_hours)
-    data = cw.trace(hours, values).detrend(
+    completed = cw.trace(hours, values).detrend(
         method=detrending["detrend"],
         window_hours=detrending["detrend_window_hours"],
         polynomial_degree=detrending["detrend_polynomial_degree"],
@@ -496,12 +544,14 @@ def detrend_trace(hours: Sequence[float], values: Sequence[float], params: dict,
         asls_smoothness=detrending["detrend_asls_smoothness"],
         asls_asymmetry=detrending["detrend_asls_asymmetry"],
         asls_iterations=detrending["detrend_asls_iterations"],
-    ).data
+    )
+    data = completed.data
     action_only = {
         "recording", "hours", "raw", "detrended", "smooth_window_hours",
         "exclude", "fit",
     }
-    return {key: value for key, value in data.items() if key not in action_only}
+    return {**{key: value for key, value in data.items() if key not in action_only},
+            "workbench_run_record": completed.run_record}
 
 
 def scale_detrended(detrended: Sequence[float], raw: Sequence[float]) -> np.ndarray:
@@ -703,10 +753,11 @@ def estimate_trace(hours: Sequence[float], values: Sequence[float], params: dict
     config = workbench_config(
         params, hours, detrend=detrend,
         detrend_window_hours=detrend_window_hours, methods=methods)
-    comparison = trace.compare_periods(
+    completed = trace.compare_periods(
         list(methods) if methods else None,
         settings=config,
-    ).data
+    )
+    comparison = completed.data
     comparison = {
         key: value for key, value in comparison.items()
         if key not in {"recording", "methods_paragraph"}
@@ -740,7 +791,8 @@ def estimate_trace(hours: Sequence[float], values: Sequence[float], params: dict
             "workbench_version": WORKBENCH_VERSION,
         })
         rows.append(row)
-    return {"config": config, "rows": rows, "comparison": comparison}
+    return {"config": config, "rows": rows, "comparison": comparison,
+            "result": completed, "run_record": completed.run_record}
 
 
 def estimate_one(hours: Sequence[float], values: Sequence[float], params: dict,
@@ -751,7 +803,8 @@ def estimate_one(hours: Sequence[float], values: Sequence[float], params: dict,
     config = workbench_config(
         params, hours, detrend=detrend,
         detrend_window_hours=detrend_window_hours, methods=[method])
-    payload = trace.period(method, settings=config).data
+    completed = trace.period(method, settings=config)
+    payload = completed.data
     returned = dict(payload["row"])
     returned.pop("label", None)
     tests_significance = bool(PERIOD_METHODS[method]["gives_significance"])
@@ -773,6 +826,7 @@ def estimate_one(hours: Sequence[float], values: Sequence[float], params: dict,
                           "rhythmic" if rhythmic else "arrhythmic"),
         "primary": method == str(params["primary_rhythm_test"]),
         "workbench_version": WORKBENCH_VERSION,
+        "workbench_run_record_json": json.dumps(completed.run_record, allow_nan=False),
     }
 
 
@@ -939,6 +993,8 @@ def estimate_grouped_rhythms(
             "estimate_reason": estimate.get("diagnostics", {}).get("reason", ""),
             "components": estimate.get("components", []),
             "estimate_diagnostics": estimate.get("diagnostics", {}),
+            "workbench_run_record_json": estimate.get("workbench_run_record_json", ""),
+            "significance_run_record_json": evidence.get("workbench_run_record_json", ""),
             "estimator_p_value": estimate.get("p_value"),
             "significance_period_hours": evidence.get("period_hours"),
             "period_difference_hours": (
@@ -983,17 +1039,7 @@ def estimate_grouped_rhythms(
 def adjust_pvalues(values: Sequence[float], correction: str) -> np.ndarray:
     """Correct one p-value family through Workbench's public statistics API."""
     raw = np.asarray(values, dtype=float)
-    # Workbench 0.7's public statistics helper supports none/Bonferroni/Sidak;
-    # an unsupported 'bh' silently takes its Sidak branch. Use SciPy's public
-    # Benjamini-Hochberg implementation until Workbench exposes that correction.
-    if correction == "bh" and correction not in cw.statistics.CORRECTIONS:
-        from scipy.stats import false_discovery_control
-        adjusted = np.full(raw.shape, np.nan, dtype=float)
-        finite = np.isfinite(raw)
-        if finite.any():
-            adjusted[finite] = false_discovery_control(raw[finite], method="bh")
-    else:
-        adjusted = cw.statistics.adjust_pvalues(raw, correction)
+    adjusted = cw.statistics.adjust_pvalues(raw, correction)
     return np.asarray(adjusted, dtype=float)
 
 
