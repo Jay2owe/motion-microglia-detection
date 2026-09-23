@@ -5,3 +5,4 @@ scikit-image
 tifffile
 Pillow
 pytest
+PyMicroglia[states]>=0.3,<0.4

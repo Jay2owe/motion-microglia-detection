@@ -53,6 +53,14 @@ powershell -ExecutionPolicy Bypass -File .\run_pipeline.ps1 `
 
 The accepted label stack is written under `m20_oscillatory_lineage/<run>/out/`. The complete-field review stack is written under `m6_review/<run>/out/`. All run folders are ignored by Git.
 
+## Cell analysis
+
+Measurements, cell states, figures and saved analysis workflows are provided by
+[PyMicroglia](https://pypi.org/project/PyMicroglia/). The `python -m analysis`
+commands remain available here as compatibility commands; see
+[analysis/README.md](analysis/README.md) for their mapping. Motion retains the
+active detector, tracker and full-field review workflow above.
+
 ## Licence
 
 No open-source licence is currently granted. The source is public for inspection; contact the maintainer before reuse.

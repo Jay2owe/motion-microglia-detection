@@ -7,6 +7,12 @@
 !/requirements.txt
 !/run_pipeline.ps1
 !/config.example.json
+!/DEPLOY_CONTRACT.md
+!/analysis/
+/analysis/*
+!/analysis/__init__.py
+!/analysis/__main__.py
+!/analysis/README.md
 !/code/
 /code/*
 !/code/*.py
